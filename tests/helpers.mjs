@@ -7,7 +7,10 @@
 // rules CLAUDE.md calls load-bearing (the browser skip guard, and running the
 // CLI through its bin symlink) are each stated once. Where the old copies had
 // drifted, the stronger variant won: `runBin` always gets both a timeout and
-// a per-call env merge, and `assertNoValue` always checks every encoding.
+// a per-call env merge, `assertNoValue` always checks every encoding, and the
+// fixture servers' `close` destroys lingering keep-alive sockets before
+// `close()` — the one copy that did, which none of the others could afford
+// to skip.
 //
 // Anything that writes to the filesystem takes its mkdtemp prefix from the
 // caller, so temp-dir names stay per-test-file and remain debuggable.
@@ -128,6 +131,19 @@ export async function runViaBin(args, env, prefix) {
 	}
 }
 
+/**
+ * Spawns `node src/cli.mjs` directly — a real process for its stdout/stderr,
+ * but deliberately NOT the bin-symlink shape: that is `runBin`'s job, and the
+ * two must stay distinct so the symlink path keeps its own coverage.
+ */
+export function runCli(args, env = {}) {
+	return new Promise((resolve) => {
+		execFile(process.execPath, [CLI_PATH, ...args], { env: { ...process.env, ...env } }, (err, stdout, stderr) => {
+			resolve({ code: err?.code ?? 0, stdout, stderr });
+		});
+	});
+}
+
 // --- credential-leak assertions ---------------------------------------------
 
 // A value with every character JSON or URL encoding rewrites, so an echo in
@@ -201,39 +217,6 @@ export function recordedStart(stateDir) {
 }
 
 /**
- * Serves fixed bodies per path, logging when each path was hit and — given
- * `stateDir` — the recorded start of the request that hit it. Anything
- * unlisted is a 404.
- */
-export async function serveLogged(routes, { stateDir } = {}) {
-	const hits = [];
-	const server = createServer((req, res) => {
-		const url = new URL(req.url, "http://127.0.0.1");
-		hits.push({
-			path: url.pathname,
-			at: Date.now(),
-			recorded: stateDir ? recordedStart(stateDir) : null,
-		});
-		const body = routes[url.pathname];
-		if (body === undefined) {
-			res.writeHead(404, { "content-type": "text/plain" });
-			res.end("not found");
-			return;
-		}
-		const type = url.pathname.endsWith(".txt") ? "text/plain" : "text/html";
-		res.writeHead(200, { "content-type": type });
-		res.end(body);
-	});
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const { port } = server.address();
-	return {
-		origin: `http://127.0.0.1:${port}`,
-		hits,
-		close: () => new Promise((resolve) => server.close(resolve)),
-	};
-}
-
-/**
  * Every consecutive pair of gated requests started at least `minGapMs` apart
  * (by recorded start, exact), and none reached the server before it was
  * recorded. See the section comment above for why not arrival gaps.
@@ -252,4 +235,61 @@ export function assertSpaced(hits, minGapMs) {
 				(gap === 0 ? "; the earlier request arrived after the later one was recorded" : ""),
 		);
 	}
+}
+
+// --- loopback fixture servers -----------------------------------------------
+
+/**
+ * The listen/address/close trailer every bespoke fixture server needs:
+ * an ephemeral loopback port, an `origin` for it, and a `close` that
+ * destroys lingering keep-alive sockets first, so a held-open connection
+ * cannot keep the server (and the test run) alive past close.
+ */
+export async function listen(server) {
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	return {
+		origin: `http://127.0.0.1:${server.address().port}`,
+		close: () => {
+			server.closeAllConnections?.();
+			return new Promise((resolve) => server.close(resolve));
+		},
+	};
+}
+
+/**
+ * Serves fixed bodies per path, logging when each path was hit and — given
+ * `stateDir` — the recorded start of the request that hit it. A route value
+ * is a string body (`text/plain` for `.txt` paths, `text/html` otherwise) or
+ * a `(req, res)` handler. Anything unlisted is a 404. Each hit records the
+ * pathname as `path` and the raw `req.url` as `url`, so callers choose
+ * whether a query string belongs to the hit.
+ */
+export async function serve(routes, { stateDir } = {}) {
+	const hits = [];
+	const server = createServer((req, res) => {
+		const url = new URL(req.url, "http://127.0.0.1");
+		hits.push({
+			path: url.pathname,
+			url: req.url,
+			at: Date.now(),
+			recorded: stateDir ? recordedStart(stateDir) : null,
+		});
+		const route = routes[url.pathname];
+		if (route === undefined) {
+			res.writeHead(404, { "content-type": "text/plain" });
+			res.end("not found");
+			return;
+		}
+		if (typeof route === "function") return route(req, res);
+		const type = url.pathname.endsWith(".txt") ? "text/plain" : "text/html";
+		res.writeHead(200, { "content-type": type });
+		res.end(route);
+	});
+	const { origin, close } = await listen(server);
+	return {
+		origin,
+		hits,
+		count: (p) => hits.filter((h) => h.path === p).length,
+		close,
+	};
 }

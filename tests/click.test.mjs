@@ -2,11 +2,10 @@
 // run anywhere; the end-to-end ones need Chromium and skip cleanly without it.
 
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
 import { test } from "node:test";
 import { parseArgs } from "../src/cli.mjs";
 import { ClickError, normalizeClickSteps, render } from "../src/render.mjs";
-import { browserOpts as opts, runViaBin, tempDir } from "./helpers.mjs";
+import { browserOpts as opts, runViaBin, serve as serveRoutes, tempDir } from "./helpers.mjs";
 
 // Never touch the real ~/.cache/trawl pacing state.
 process.env.TRAWL_STATE_DIR = tempDir("trawl-state-");
@@ -50,28 +49,20 @@ const PAGE = `<!doctype html>
   });
 </script>`;
 
+// The routes-map server every click test drives. The shared `serve`
+// (tests/helpers.mjs) records each hit's pathname; the page itself is the
+// fixture above.
 async function serve() {
-	const hits = [];
-	const server = createServer((req, res) => {
-		hits.push(req.url);
-		if (req.url === "/robots.txt") {
+	const s = await serveRoutes({
+		"/robots.txt": (_req, res) => {
 			res.writeHead(404);
 			res.end();
-			return;
-		}
-		res.writeHead(200, { "content-type": "text/html" });
-		if (req.url === "/wall") {
-			res.end("<title>Gated</title><body>Sign in</body>");
-			return;
-		}
-		res.end(req.url === "/other" ? "<title>Other</title><p>other page</p>" : PAGE);
+		},
+		"/wall": "<title>Gated</title><body>Sign in</body>",
+		"/other": "<title>Other</title><p>other page</p>",
+		"/": PAGE,
 	});
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	return {
-		url: `http://127.0.0.1:${server.address().port}/`,
-		hits,
-		close: () => new Promise((resolve) => server.close(resolve)),
-	};
+	return { ...s, url: `${s.origin}/` };
 }
 
 const fast = { minIntervalMs: 0 };
@@ -80,12 +71,13 @@ const fast = { minIntervalMs: 0 };
 // in flight when render() settles. Poll the server log for a bounded window
 // and fail the moment `path` shows up.
 async function assertNeverRequested(s, path, windowMs = 400) {
+	const saw = () => s.hits.filter((h) => h.path === path).map((h) => h.url).join(", ");
 	const deadline = Date.now() + windowMs;
 	while (Date.now() < deadline) {
-		assert.ok(!s.hits.includes(path), `server saw ${s.hits.join(", ")}`);
+		assert.equal(saw(), "", `server saw ${saw()}`);
 		await new Promise((resolve) => setTimeout(resolve, 25));
 	}
-	assert.ok(!s.hits.includes(path), `server saw ${s.hits.join(", ")}`);
+	assert.equal(saw(), "", `server saw ${saw()}`);
 }
 
 // --- parsing ---------------------------------------------------------------

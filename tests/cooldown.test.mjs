@@ -17,7 +17,6 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { createServer } from "node:http";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -39,7 +38,7 @@ import {
 import { callTool } from "../src/mcp.mjs";
 import { createPacer } from "../src/pacing.mjs";
 import { CooldownError as ExportedCooldownError, render } from "../src/render.mjs";
-import { binLink, browserOpts as browser, runBin } from "./helpers.mjs";
+import { binLink, browserOpts as browser, runBin, serve } from "./helpers.mjs";
 
 // render() defaults to $TRAWL_STATE_DIR; never let it fall through to the
 // user's real cache.
@@ -515,35 +514,8 @@ async function seed(stateDir, origin, { status = 503, retryAfter = "600" } = {})
 	return s;
 }
 
-// A loopback server whose responses are set per path, counting every hit.
-async function serve(routes) {
-	const hits = [];
-	const server = createServer((req, res) => {
-		const { pathname } = new URL(req.url, "http://127.0.0.1");
-		hits.push(pathname);
-		const route = routes[pathname];
-		if (route === undefined) {
-			res.writeHead(404, { "content-type": "text/plain" });
-			res.end("not found");
-			return;
-		}
-		if (typeof route === "function") return route(req, res);
-		res.writeHead(200, {
-			"content-type": pathname.endsWith(".txt") ? "text/plain" : "text/html",
-		});
-		res.end(route);
-	});
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	return {
-		origin: `http://127.0.0.1:${server.address().port}`,
-		hits,
-		count: (p) => hits.filter((h) => h === p).length,
-		close: () => {
-			server.closeAllConnections?.();
-			return new Promise((resolve) => server.close(resolve));
-		},
-	};
-}
+// A loopback server whose responses are set per path, counting every hit —
+// the shared `serve` (tests/helpers.mjs).
 
 const ROBOTS = "User-agent: *\nAllow: /\n";
 

@@ -5,7 +5,6 @@
 // last one fetches for real through a symlinked bin.
 
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
@@ -22,10 +21,12 @@ import {
 	assertNoValue,
 	binLink,
 	browserOpts,
-	CLI_PATH,
 	errorText,
+	listen,
 	netscape,
 	runBin,
+	runCli,
+	serve,
 	tempDir as sharedTempDir,
 	writeSource,
 } from "./helpers.mjs";
@@ -696,8 +697,8 @@ test("robots.txt gets non-ASCII cookies as UTF-8, like the page request", browse
 		res.writeHead(200, { "content-type": "text/html" });
 		res.end("<!doctype html><title>t</title>");
 	});
-	await new Promise((r) => server.listen(0, "127.0.0.1", r));
-	const url = `http://127.0.0.1:${server.address().port}/`;
+	const { origin, close } = await listen(server);
+	const url = `${origin}/`;
 	const cookies = [
 		{ name: "p", value: "snow\u2603man", domain: "127.0.0.1", path: "/" },
 		{ name: "q", value: "caf\u00e9", domain: "127.0.0.1", path: "/" },
@@ -716,20 +717,15 @@ test("robots.txt gets non-ASCII cookies as UTF-8, like the page request", browse
 			assert.ok(raw.page[0].includes(hex("q=caf\u00e9")), raw.page[0]);
 		}
 	} finally {
-		await new Promise((r) => server.close(r));
+		await close();
 		rmSync(dir, { recursive: true, force: true });
 	}
 });
 
 // --- redaction across real processes (stdout + stderr) ---
 
-function runCli(args, env = {}) {
-	return new Promise((resolve) => {
-		execFile(process.execPath, [CLI_PATH, ...args], { env: { ...process.env, ...env } }, (err, stdout, stderr) => {
-			resolve({ code: err?.code ?? 0, stdout, stderr });
-		});
-	});
-}
+// `runCli` is shared (tests/helpers.mjs): a real process for stdout/stderr,
+// but not the bin-symlink shape `runBin` covers.
 
 test("the sentinel cookie value appears in no fetch output, on any path", async () => {
 	const dir = tempDir();
@@ -776,8 +772,7 @@ test("--cookies presents the cookie for one fetch only, from every format", brow
 		res.writeHead(200, { "content-type": "text/html" });
 		res.end(`<!doctype html><title>echo</title><pre>cookie=[${req.headers.cookie ?? ""}]</pre>`);
 	});
-	await new Promise((r) => server.listen(0, "127.0.0.1", r));
-	const origin = `http://127.0.0.1:${server.address().port}`;
+	const { origin, close } = await listen(server);
 	const env = { HOME: home, TRAWL_PROFILE_DIR: "" };
 	// The browser itself may write into $HOME on any launch (Chromium on Linux
 	// creates .cache and .local), so the bar is a plain fetch's footprint in a
@@ -822,7 +817,7 @@ test("--cookies presents the cookie for one fetch only, from every format", brow
 		}
 		assert.deepEqual(readdirSync(dir).sort(), ["cookies.txt", "r.curl", "t.har"]);
 	} finally {
-		await new Promise((r) => server.close(r));
+		await close();
 		for (const d of [dir, binDir, home, baselineHome]) rmSync(d, { recursive: true, force: true });
 	}
 });
@@ -857,8 +852,7 @@ test("a cookie-gated robots.txt lets the fetch through with --cookies or an impo
 		res.writeHead(200, { "content-type": "text/html" });
 		res.end(`<!doctype html><title>echo</title><pre>cookie=[${req.headers.cookie ?? ""}]</pre>`);
 	});
-	await new Promise((r) => server.listen(0, "127.0.0.1", r));
-	const origin = `http://127.0.0.1:${server.address().port}`;
+	const { origin, close } = await listen(server);
 	const env = { HOME: home, TRAWL_PROFILE_DIR: "" };
 	const common = ["--no-auth-check", "--no-pacing"];
 	const file = writeSource(
@@ -914,7 +908,7 @@ test("a cookie-gated robots.txt lets the fetch through with --cookies or an impo
 		assert.ok(urls.includes(`${origin}/`), urls.join(" "));
 		assert.ok(!urls.includes(`${origin}/robots.txt`), urls.join(" "));
 	} finally {
-		await new Promise((r) => server.close(r));
+		await close();
 		for (const d of [dir, binDir, home]) rmSync(d, { recursive: true, force: true });
 	}
 });
@@ -925,24 +919,30 @@ test("a cookie-gated robots.txt lets the fetch through with --cookies or an impo
 // parser hands header values over as latin-1, one character per byte).
 async function bytesServer({ robots = "allow" } = {}) {
 	const seen = [];
-	const server = createServer((req, res) => {
+	const record = (req) => {
 		const i = req.rawHeaders.findIndex((h) => h.toLowerCase() === "cookie");
 		const raw = i >= 0 ? req.rawHeaders[i + 1] : null;
 		seen.push({ url: req.url, cookie: raw === null ? null : Buffer.from(raw, "latin1") });
-		if (req.url === "/robots.txt") {
+	};
+	const s = await serve({
+		"/robots.txt": (req, res) => {
+			record(req);
 			if (robots === "destroy") return req.socket.destroy();
 			res.writeHead(200, { "content-type": "text/plain" });
-			return res.end("User-agent: *\nDisallow:\n");
-		}
-		res.writeHead(200, { "content-type": "text/html" });
-		res.end("<!doctype html><title>loaded</title><p>page loaded</p>");
+			res.end("User-agent: *\nDisallow:\n");
+		},
+		"/": (req, res) => {
+			record(req);
+			res.writeHead(200, { "content-type": "text/html" });
+			res.end("<!doctype html><title>loaded</title><p>page loaded</p>");
+		},
+		"/page": (req, res) => {
+			record(req);
+			res.writeHead(200, { "content-type": "text/html" });
+			res.end("<!doctype html><title>loaded</title><p>page loaded</p>");
+		},
 	});
-	await new Promise((r) => server.listen(0, "127.0.0.1", r));
-	return {
-		origin: `http://127.0.0.1:${server.address().port}`,
-		seen,
-		close: () => new Promise((r) => server.close(r)),
-	};
+	return { origin: s.origin, seen, close: s.close };
 }
 
 // The cookies of a raw header, as byte strings, in no particular order.
@@ -1143,13 +1143,13 @@ async function partitionRig(scheme) {
 		res.end("<!doctype html><title>t</title><p>loaded</p>");
 	};
 	const server = scheme === "https" ? createHttpsServer(selfSignedCert(), handler) : createServer(handler);
-	await new Promise((r) => server.listen(0, "127.0.0.1", r));
+	const { close } = await listen(server);
 	port = server.address().port;
 	return {
 		seen,
 		origin: `${scheme}://localhost:${port}`,
 		embed: `${scheme}://127.0.0.1:${port}/embed`,
-		close: () => new Promise((r) => server.close(r)),
+		close,
 	};
 }
 

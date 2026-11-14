@@ -3,7 +3,6 @@
 // Chromium. The last one imports for real and fetches through --profile.
 
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -22,10 +21,11 @@ import {
 	assertNoValue,
 	binLink,
 	browserOpts,
-	CLI_PATH,
 	errorText,
+	listen,
 	netscape,
 	runBin,
+	runCli,
 	tempDir as sharedTempDir,
 	writeSource,
 } from "./helpers.mjs";
@@ -610,13 +610,8 @@ test("browserWouldReject agrees with Chromium's addCookies", browserOpts, async 
 
 // --- redaction across real processes (stdout + stderr) ---
 
-function runCli(args, env = {}) {
-	return new Promise((resolve) => {
-		execFile(process.execPath, [CLI_PATH, ...args], { env: { ...process.env, ...env } }, (err, stdout, stderr) => {
-			resolve({ code: err?.code ?? 0, stdout, stderr });
-		});
-	});
-}
+// `runCli` is shared (tests/helpers.mjs): a real process for stdout/stderr,
+// but not the bin-symlink shape `runBin` covers.
 
 test("the sentinel cookie value appears in no output, on any path", async () => {
 	const dir = tempDir();
@@ -681,8 +676,7 @@ test("an imported cookie is presented by a later fetch with --profile", browserO
 		res.writeHead(200, { "content-type": "text/html" });
 		res.end(`<!doctype html><title>echo</title><pre>cookie=[${req.headers.cookie ?? ""}]</pre>`);
 	});
-	await new Promise((r) => server.listen(0, "127.0.0.1", r));
-	const origin = `http://127.0.0.1:${server.address().port}`;
+	const { origin, close } = await listen(server);
 	try {
 		const profile = join(dir, "profile");
 		const file = writeSource(
@@ -707,7 +701,7 @@ test("an imported cookie is presented by a later fetch with --profile", browserO
 		assert.match(fetched.stdout, /trawl_e2e=imported-ok/);
 		assert.match(fetched.stdout, /from_har=yes/);
 	} finally {
-		await new Promise((r) => server.close(r));
+		await close();
 		rmSync(dir, { recursive: true, force: true });
 		cleanupBin();
 	}
