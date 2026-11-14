@@ -19,8 +19,9 @@ import {
 	assertSpaced,
 	browserOpts as opts,
 	fixtureUrl as sharedFixtureUrl,
+	listen,
 	recordedStart,
-	serveLogged,
+	serve,
 	tmpFile as sharedTmpFile,
 } from "./helpers.mjs";
 
@@ -119,21 +120,14 @@ function harPath(name = "out.har") {
 // Minimal static server on an ephemeral port, so tests never depend on the
 // network or a fixed port being free.
 async function startServer() {
-	const server = createServer((req, res) => {
-		if (req.url === "/style.css") {
+	const { origin, close } = await serve({
+		"/style.css": (_req, res) => {
 			res.writeHead(200, { "content-type": "text/css" });
 			res.end(STYLESHEET);
-			return;
-		}
-		res.writeHead(200, { "content-type": "text/html" });
-		res.end(PAGE_WITH_SUBRESOURCE);
+		},
+		"/": PAGE_WITH_SUBRESOURCE,
 	});
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const { port } = server.address();
-	return {
-		url: `http://127.0.0.1:${port}/`,
-		close: () => new Promise((resolve) => server.close(resolve)),
-	};
+	return { url: `${origin}/`, close };
 }
 
 function readHar(file) {
@@ -294,12 +288,8 @@ async function serveWithCsp(html, csp) {
 		});
 		res.end(html);
 	});
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const { port } = server.address();
-	return {
-		url: `http://127.0.0.1:${port}/article.html`,
-		close: () => new Promise((resolve) => server.close(resolve)),
-	};
+	const { origin, close } = await listen(server);
+	return { url: `${origin}/article.html`, close };
 }
 
 test("renders markdown on a page with a strict script-src CSP", opts, async () => {
@@ -484,22 +474,23 @@ test("still writes a valid HAR when navigation throws", opts, async () => {
 // /style.css subresource: both the Set-Cookie and Cookie sides land in the HAR.
 const COOKIE_SENTINEL = "s3cr3t-live-sentinel";
 async function startCookieServer() {
-	const server = createServer((req, res) => {
-		const headers = { "set-cookie": `sid=${COOKIE_SENTINEL}; Path=/` };
-		if (req.url === "/style.css") {
-			res.writeHead(200, { ...headers, "content-type": "text/css" });
+	const { origin, close } = await serve({
+		"/style.css": (_req, res) => {
+			res.writeHead(200, {
+				"set-cookie": `sid=${COOKIE_SENTINEL}; Path=/`,
+				"content-type": "text/css",
+			});
 			res.end(STYLESHEET);
-			return;
-		}
-		res.writeHead(200, { ...headers, "content-type": "text/html" });
-		res.end(PAGE_WITH_SUBRESOURCE);
+		},
+		"/": (_req, res) => {
+			res.writeHead(200, {
+				"set-cookie": `sid=${COOKIE_SENTINEL}; Path=/`,
+				"content-type": "text/html",
+			});
+			res.end(PAGE_WITH_SUBRESOURCE);
+		},
 	});
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const { port } = server.address();
-	return {
-		url: `http://127.0.0.1:${port}/`,
-		close: () => new Promise((resolve) => server.close(resolve)),
-	};
+	return { url: `${origin}/`, close };
 }
 
 test("flag off: the HAR holds the cookie sentinel (the test can see a leak)", opts, async () => {
@@ -594,28 +585,6 @@ const NO_BROWSER = {
 	executablePath: path.join(tmpdir(), "trawl-no-such-chrome"),
 };
 
-// Serve a fixed body per path; anything unlisted is a 404.
-async function serve(routes) {
-	const server = createServer((req, res) => {
-		const url = new URL(req.url, "http://127.0.0.1");
-		const body = routes[url.pathname];
-		if (body === undefined) {
-			res.writeHead(404, { "content-type": "text/plain" });
-			res.end("not found");
-			return;
-		}
-		const type = url.pathname.endsWith(".txt") ? "text/plain" : "text/html";
-		res.writeHead(200, { "content-type": type });
-		res.end(body);
-	});
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const { port } = server.address();
-	return {
-		origin: `http://127.0.0.1:${port}`,
-		close: () => new Promise((resolve) => server.close(resolve)),
-	};
-}
-
 test("refuses a robots.txt-disallowed path before launching a browser", async () => {
 	const s = await serve({
 		"/robots.txt": "User-agent: *\nDisallow: /private/\n",
@@ -686,28 +655,27 @@ test("a missing (404) robots.txt allows the page", async () => {
 	}
 });
 
-// A loopback server whose robots.txt answers with `robots(req, res)`; every
-// other request is counted as a page request and served a tiny page.
+// A loopback server whose robots.txt answers with `robots(req, res, pathname)`
+// (the redirect target /robots-down routes there too); every other listed
+// request is counted as a page request and served a tiny page.
 async function serveRobots(robots) {
 	const hits = { robots: 0, page: 0 };
-	const server = createServer((req, res) => {
-		const { pathname } = new URL(req.url, "http://127.0.0.1");
-		if (pathname === "/robots.txt" || pathname.startsWith("/robots-")) {
+	const s = await serve({
+		"/robots.txt": (req, res) => {
 			hits.robots++;
-			robots(req, res, pathname);
-			return;
-		}
-		hits.page++;
-		res.writeHead(200, { "content-type": "text/html" });
-		res.end("<!doctype html><title>Page</title><p>reached the page</p>");
+			robots(req, res, "/robots.txt");
+		},
+		"/robots-down": (req, res) => {
+			hits.robots++;
+			robots(req, res, "/robots-down");
+		},
+		"/page": (_req, res) => {
+			hits.page++;
+			res.writeHead(200, { "content-type": "text/html" });
+			res.end("<!doctype html><title>Page</title><p>reached the page</p>");
+		},
 	});
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const { port } = server.address();
-	return {
-		origin: `http://127.0.0.1:${port}`,
-		hits,
-		close: () => new Promise((resolve) => server.close(resolve)),
-	};
+	return { origin: s.origin, hits, close: s.close };
 }
 
 const status = (code) => (_req, res) => {
@@ -977,11 +945,10 @@ test("a redirect to a known login path is reported as an auth wall", opts, async
 		res.writeHead(200, { "content-type": "text/html" });
 		res.end(`<!doctype html><title>Log in</title><body>please wait…</body>`);
 	});
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const { port } = server.address();
+	const { origin, close } = await listen(server);
 	try {
 		await assert.rejects(
-			() => render(`http://127.0.0.1:${port}/app`, { ignoreRobots: true }),
+			() => render(`${origin}/app`, { ignoreRobots: true }),
 			(err) => {
 				assert.ok(err instanceof AuthWallError);
 				assert.match(err.message, /login page \(\/login\)/);
@@ -989,7 +956,7 @@ test("a redirect to a known login path is reported as an auth wall", opts, async
 			},
 		);
 	} finally {
-		await new Promise((resolve) => server.close(resolve));
+		await close();
 	}
 });
 
@@ -1023,10 +990,8 @@ function serveCookieProbe() {
 }
 
 test("--profile persists cookies across separate render() calls", opts, async () => {
-	const server = serveCookieProbe();
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const { port } = server.address();
-	const url = `http://127.0.0.1:${port}/`;
+	const { origin, close } = await listen(serveCookieProbe());
+	const url = `${origin}/`;
 	const profileDir = tmpProfileDir();
 	try {
 		const first = await render(url, { profileDir, ignoreRobots: true });
@@ -1039,15 +1004,13 @@ test("--profile persists cookies across separate render() calls", opts, async ()
 			"a second render() against the same --profile dir should reuse the cookie jar",
 		);
 	} finally {
-		await new Promise((resolve) => server.close(resolve));
+		await close();
 	}
 });
 
 test("without --profile, cookies do not survive across render() calls", opts, async () => {
-	const server = serveCookieProbe();
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const { port } = server.address();
-	const url = `http://127.0.0.1:${port}/`;
+	const { origin, close } = await listen(serveCookieProbe());
+	const url = `${origin}/`;
 	try {
 		const first = await render(url, { ignoreRobots: true });
 		assert.match(first.body, /cookie: no/);
@@ -1059,7 +1022,7 @@ test("without --profile, cookies do not survive across render() calls", opts, as
 			"an ephemeral (no --profile) context must not carry state between calls",
 		);
 	} finally {
-		await new Promise((resolve) => server.close(resolve));
+		await close();
 	}
 });
 
@@ -1087,11 +1050,9 @@ function serveHangingStream() {
 }
 
 test("a networkidle timeout retries once with domcontentloaded instead of failing", opts, async () => {
-	const server = serveHangingStream();
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const { port } = server.address();
+	const { origin, close } = await listen(serveHangingStream());
 	try {
-		const result = await render(`http://127.0.0.1:${port}/`, {
+		const result = await render(`${origin}/`, {
 			ignoreRobots: true,
 			timeout: 2000,
 		});
@@ -1102,9 +1063,8 @@ test("a networkidle timeout retries once with domcontentloaded instead of failin
 		});
 	} finally {
 		// The open /stream connection would otherwise keep the server (and the
-		// test process) alive indefinitely.
-		server.closeAllConnections();
-		await new Promise((resolve) => server.close(resolve));
+		// test process) alive indefinitely; close() destroys it first.
+		await close();
 	}
 });
 
@@ -1112,13 +1072,11 @@ test("an explicit non-networkidle wait condition still fails on timeout, unretri
 	// Bind then immediately release a port: connections to it are refused, so
 	// `page.goto` rejects for a reason that is not "networkidle timed out" —
 	// the fallback must not fire, and the original error must surface.
-	const server = createServer((_, res) => res.end());
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const { port } = server.address();
-	await new Promise((resolve) => server.close(resolve));
+	const { origin, close } = await listen(createServer((_, res) => res.end()));
+	await close();
 
 	await assert.rejects(() =>
-		render(`http://127.0.0.1:${port}/`, {
+		render(`${origin}/`, {
 			ignoreRobots: true,
 			waitUntil: "load",
 			timeout: 2000,
@@ -1149,11 +1107,11 @@ test("an explicit non-networkidle wait condition still fails on timeout, unretri
 // Spacing is then asserted on recorded starts with no tolerance, plus the
 // causal check that each request arrived no earlier than its recorded start.
 
-// `recordedStart`, `serveLogged` and `assertSpaced` implement exactly that:
-// they are shared with tests/cli.test.mjs through tests/helpers.mjs, which
-// carries this same reasoning next to them. `serveLogged` serves fixed bodies
-// like `serve()` above but also logs each hit; `assertSpaced` asserts the
-// spacing on recorded starts with no tolerance.
+// `recordedStart`, `serve` and `assertSpaced` implement exactly that: they
+// are shared with tests/cli.test.mjs through tests/helpers.mjs, which carries
+// this same reasoning next to them. `serve` serves fixed bodies per path and
+// logs each hit; `assertSpaced` asserts the spacing on recorded starts with
+// no tolerance.
 
 function freshStateDir() {
 	return mkdtempSync(path.join(tmpdir(), "trawl-pacing-state-"));
@@ -1204,7 +1162,7 @@ test("a non-http(s) URL never touches the pacing state dir", async () => {
 
 test("robots.txt fetches from separate render() calls are paced on the minimum interval", async () => {
 	const pacingStateDir = freshStateDir();
-	const s = await serveLogged({ "/robots.txt": "User-agent: *\nAllow: /\n" }, { stateDir: pacingStateDir });
+	const s = await serve({ "/robots.txt": "User-agent: *\nAllow: /\n" }, { stateDir: pacingStateDir });
 	try {
 		for (let i = 0; i < 2; i++) {
 			await assert.rejects(
@@ -1221,7 +1179,7 @@ test("robots.txt fetches from separate render() calls are paced on the minimum i
 });
 
 test("pacing: false neither waits across calls nor writes state", async () => {
-	const s = await serveLogged({ "/robots.txt": "User-agent: *\nAllow: /\n" });
+	const s = await serve({ "/robots.txt": "User-agent: *\nAllow: /\n" });
 	const pacingStateDir = freshStateDir();
 	try {
 		for (let i = 0; i < 2; i++) {
@@ -1246,7 +1204,7 @@ test("pacing: false neither waits across calls nor writes state", async () => {
 
 test("Crawl-delay paces robots and page requests across two render() calls", opts, async () => {
 	const pacingStateDir = freshStateDir();
-	const s = await serveLogged({
+	const s = await serve({
 		"/robots.txt": "User-agent: *\nCrawl-delay: 0.8\n",
 		"/page.html": "<!doctype html><title>P</title><h1>Paced</h1>",
 	}, { stateDir: pacingStateDir });
@@ -1270,7 +1228,7 @@ test("Crawl-delay paces robots and page requests across two render() calls", opt
 
 test("ignoreRobots skips Crawl-delay but still paces on the minimum interval", opts, async () => {
 	const pacingStateDir = freshStateDir();
-	const s = await serveLogged({
+	const s = await serve({
 		"/robots.txt": "User-agent: *\nCrawl-delay: 30\n",
 		"/page.html": "<!doctype html><title>P</title><h1>Paced</h1>",
 	}, { stateDir: pacingStateDir });
@@ -1297,10 +1255,9 @@ test("the networkidle-fallback navigation passes through the same gate", opts, a
 			hits.push({ path: "/", at: Date.now(), recorded: recordedStart(pacingStateDir) });
 		}
 	});
-	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-	const { port } = server.address();
+	const { origin, close } = await listen(server);
 	try {
-		const result = await render(`http://127.0.0.1:${port}/`, {
+		const result = await render(`${origin}/`, {
 			ignoreRobots: true,
 			timeout: 1000,
 			// Longer than the navigation timeout, so only the gate can explain
@@ -1310,15 +1267,14 @@ test("the networkidle-fallback navigation passes through the same gate", opts, a
 		});
 		assert.ok(result.waitUntilFallback);
 	} finally {
-		server.closeAllConnections();
-		await new Promise((resolve) => server.close(resolve));
+		await close();
 	}
 	assert.equal(hits.length, 2);
 	assertSpaced(hits, 2500);
 });
 
 test("an unwritable state dir warns on stderr and still renders", opts, async () => {
-	const s = await serveLogged({
+	const s = await serve({
 		"/robots.txt": "User-agent: *\nAllow: /\n",
 		"/page.html": "<!doctype html><title>P</title><h1>Still here</h1>",
 	});
@@ -1433,27 +1389,24 @@ test("cookies: a denial drops the 'no cookies' note only when cookies were sent"
 // real servers, for a different host and for a different port.
 test("cookies: the Cookie header is not forwarded on a cross-origin robots.txt redirect", async () => {
 	const seen = [];
-	const listen = (name, handler) =>
-		new Promise((resolve) => {
-			const server = createServer((req, res) => {
-				seen.push([name, req.url, req.headers.cookie ?? null]);
-				handler(req, res);
-			});
-			server.listen(0, "127.0.0.1", () => resolve(server));
+	const makeServer = (name, handler) =>
+		createServer((req, res) => {
+			seen.push([name, req.url, req.headers.cookie ?? null]);
+			handler(req, res);
 		});
-	const target = await listen("target", (_req, res) => {
+	const target = await listen(makeServer("target", (_req, res) => {
 		res.writeHead(200, { "content-type": "text/plain" });
 		res.end("User-agent: *\nDisallow:\n");
-	});
-	const tport = target.address().port;
-	const source = await listen("source", (req, res) => {
+	}));
+	const tport = new URL(target.origin).port;
+	const source = await listen(makeServer("source", (req, res) => {
 		const to = req.headers.host.startsWith("localhost")
 			? `http://127.0.0.1:${tport}/robots.txt`
 			: `http://localhost:${tport}/robots.txt`;
 		res.writeHead(302, { location: to });
 		res.end();
-	});
-	const sport = source.address().port;
+	}));
+	const sport = new URL(source.origin).port;
 	try {
 		for (const [host, domain] of [["127.0.0.1", "127.0.0.1"], ["localhost", "localhost"]]) {
 			await assert.rejects(
@@ -1473,7 +1426,7 @@ test("cookies: the Cookie header is not forwarded on a cross-origin robots.txt r
 			["target", "/robots.txt", null],
 		]);
 	} finally {
-		await new Promise((r) => source.close(r));
-		await new Promise((r) => target.close(r));
+		await source.close();
+		await target.close();
 	}
 });

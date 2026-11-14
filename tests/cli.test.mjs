@@ -22,7 +22,7 @@ import {
 	CLI_PATH,
 	fixtureUrl as sharedFixtureUrl,
 	runBin,
-	serveLogged,
+	serve,
 	tempDir,
 } from "./helpers.mjs";
 
@@ -418,7 +418,7 @@ test("--help documents the pacing flags and the state dir", async () => {
 	assert.match(stdout, /TRAWL_STATE_DIR/);
 });
 
-// `serveLogged` logs when each path was requested and, given `stateDir`, the
+// `serve` logs when each path was requested and, given `stateDir`, the
 // recorded start of the request that hit it; `assertSpaced` checks consecutive
 // gated requests started >= minGapMs apart. Both are shared
 // (tests/helpers.mjs), along with `runBin` and `binLink` — see the section
@@ -428,7 +428,7 @@ test("--help documents the pacing flags and the state dir", async () => {
 const NO_SUCH_CHROME = join(tmpdir(), "trawl-no-such-chrome");
 
 test("rejects a bad --min-interval before making any request", async () => {
-	const s = await serveLogged({ "/robots.txt": "" });
+	const s = await serve({ "/robots.txt": "" });
 	try {
 		for (const bad of ["-1", "abc", "", "60001", "Infinity"]) {
 			const { code, stderr } = await runCli(CLI_PATH, [`${s.origin}/`, "--min-interval", bad]);
@@ -443,7 +443,7 @@ test("rejects a bad --min-interval before making any request", async () => {
 
 test("two separate trawl processes are spaced by --min-interval (via the bin symlink)", async () => {
 	const TRAWL_STATE_DIR = tempDir("trawl-state-");
-	const s = await serveLogged({ "/robots.txt": "User-agent: *\nAllow: /\n" }, { stateDir: TRAWL_STATE_DIR });
+	const s = await serve({ "/robots.txt": "User-agent: *\nAllow: /\n" }, { stateDir: TRAWL_STATE_DIR });
 	const { link, cleanup } = binLink();
 	try {
 		for (let i = 0; i < 2; i++) {
@@ -468,7 +468,7 @@ test("two separate trawl processes are spaced by --min-interval (via the bin sym
 });
 
 test("--no-pacing opts out: no cross-run wait and no state written", async () => {
-	const s = await serveLogged({ "/robots.txt": "User-agent: *\nAllow: /\n" });
+	const s = await serve({ "/robots.txt": "User-agent: *\nAllow: /\n" });
 	const { link, cleanup } = binLink();
 	const TRAWL_STATE_DIR = tempDir("trawl-state-");
 	try {
@@ -490,7 +490,7 @@ test("--no-pacing opts out: no cross-run wait and no state written", async () =>
 
 test("two CLI renders space every robots.txt and page request", opts, async () => {
 	const TRAWL_STATE_DIR = tempDir("trawl-state-");
-	const s = await serveLogged({
+	const s = await serve({
 		"/robots.txt": "User-agent: *\nAllow: /\n",
 		"/page.html": "<!doctype html><title>P</title><h1>Paced page</h1>",
 	}, { stateDir: TRAWL_STATE_DIR });

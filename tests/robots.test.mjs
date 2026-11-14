@@ -17,7 +17,7 @@ import {
 	safeErrorCode,
 	selectGroup,
 } from "../src/robots.mjs";
-import { AWKWARD, assertNoValue } from "./helpers.mjs";
+import { AWKWARD, assertNoValue, listen } from "./helpers.mjs";
 
 const UA = "trawl/0.1.0 (+https://github.com/rjwalters/trawl)";
 
@@ -644,9 +644,9 @@ test("checkRobotsAllowed sends a ready byte-string cookie header unchanged and d
 		res.writeHead(200, { "content-type": "text/plain" });
 		res.end("User-agent: *\nDisallow:\n");
 	});
-	await new Promise((r) => server.listen(0, "127.0.0.1", r));
+	const { origin, close } = await listen(server);
 	try {
-		const url = `http://127.0.0.1:${server.address().port}/page`;
+		const url = `${origin}/page`;
 		for (const [value, hex] of [
 			["snow\u2603man", "736e6f77e298836d616e"],
 			["caf\u00e9", "636166c3a9"],
@@ -658,7 +658,7 @@ test("checkRobotsAllowed sends a ready byte-string cookie header unchanged and d
 			assert.equal(Buffer.from(header, "latin1").toString("hex"), `703d${hex}`);
 		}
 	} finally {
-		await new Promise((r) => server.close(r));
+		await close();
 	}
 });
 
@@ -843,12 +843,12 @@ async function redirectRig({ to, body = "User-agent: *\nDisallow:\n" }) {
 	};
 	const a = createServer(handler("a"));
 	const b = createServer(handler("b"));
-	await Promise.all([a, b].map((s) => new Promise((r) => s.listen(0, "127.0.0.1", r))));
-	const origins = { a: `http://127.0.0.1:${a.address().port}`, b: `http://127.0.0.1:${b.address().port}` };
+	const [la, lb] = await Promise.all([listen(a), listen(b)]);
+	const origins = { a: la.origin, b: lb.origin };
 	return {
 		...origins,
 		seen,
-		close: () => Promise.all([a, b].map((s) => new Promise((r) => s.close(r)))),
+		close: () => Promise.all([la.close(), lb.close()]),
 	};
 }
 
