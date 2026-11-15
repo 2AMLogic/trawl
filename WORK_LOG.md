@@ -5,6 +5,12 @@ Maintained by the Loom Guide role; entries are appended automatically.
 
 ### 2026-11-15
 
+- **PR #134**: docs: refresh ROADMAP.md tracker state as of 2026-11-15
+- **PR #133**: docs: refresh README Status with current capabilities and ROADMAP/CHANGELOG links
+- **PR #132**: tests: give the shared runCli runBin's 60s timeout and signal contract
+- **Issue #130** (closed): tests: three local runCli helpers spawn the CLI with no timeout, so a hang wedges the whole node --test run
+- **Issue #124** (closed): ROADMAP.md: refresh the stale tracker state — the Now, Next and Blocked sections describe finished work
+- **Issue #112** (closed): README: bring the Status section up to date and link ROADMAP.md
 - **PR #129**: fix: a signal-killed child reports code 124 from the shared runBin helper
 - **PR #128**: refactor: remove pacingOrigin/cooldownOrigin aliases of stateOrigin
 - **PR #108**: docs: roadmap as of 2026-11-13
