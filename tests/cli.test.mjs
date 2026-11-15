@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +21,7 @@ import {
 	CLI_PATH,
 	fixtureUrl as sharedFixtureUrl,
 	runBin,
+	runCli as runCliEntry,
 	serve,
 	tempDir,
 } from "./helpers.mjs";
@@ -319,13 +319,11 @@ test("main() dispatches `trawl login <origin>` to runLogin", async () => {
 // test imports the module or spawns `node src/cli.mjs`, and both of those pass
 // even with the bug present.
 
-function runCli(entry, args = []) {
-	return new Promise((resolve) => {
-		execFile(process.execPath, [entry, ...args], (err, stdout, stderr) => {
-			resolve({ code: err?.code ?? 0, stdout, stderr });
-		});
-	});
-}
+// `runCli` is the shared spawn helper (tests/helpers.mjs): `node <entry>` —
+// still not the bin-symlink shape `runBin` covers. The adapter keeps this
+// file's `(entry, args)` call shape and injects `entry` through the shared
+// helper's `opts`.
+const runCli = (entry, args = []) => runCliEntry(args, {}, { entry });
 
 test("isMainModule() resolves a symlinked entry back to this module", () => {
 	const { dir, link, cleanup } = binLink();

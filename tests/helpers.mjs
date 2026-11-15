@@ -153,12 +153,31 @@ export async function runViaBin(args, env, prefix) {
  * Spawns `node src/cli.mjs` directly — a real process for its stdout/stderr,
  * but deliberately NOT the bin-symlink shape: that is `runBin`'s job, and the
  * two must stay distinct so the symlink path keeps its own coverage.
+ *
+ * Same contract as `runBin`: the 60s timeout means a hung `trawl` fails this
+ * one test instead of hanging the whole `node --test` run, and a signal-killed
+ * child resolves with `code: 124` (the `timeout(1)` convention) and `signal`
+ * set, never a silent `code: 0`. `opts` carries an optional `entry` —
+ * `node <entry>` instead of `node src/cli.mjs`, which cli.test.mjs's
+ * symlink-coverage tests need — plus any `execFile` overrides (e.g. a shorter
+ * `timeout` to test the kill path).
  */
-export function runCli(args, env = {}) {
+export function runCli(args, env = {}, opts = {}) {
+	const { entry = CLI_PATH, ...execOpts } = opts;
 	return new Promise((resolve) => {
-		execFile(process.execPath, [CLI_PATH, ...args], { env: { ...process.env, ...env } }, (err, stdout, stderr) => {
-			resolve({ code: err?.code ?? 0, stdout, stderr });
-		});
+		execFile(
+			process.execPath,
+			[entry, ...args],
+			{ env: { ...process.env, ...env }, timeout: 60000, ...execOpts },
+			(err, stdout, stderr) => {
+				resolve({
+					code: err?.code ?? (err?.signal ? 124 : 0),
+					signal: err?.signal ?? null,
+					stdout,
+					stderr,
+				});
+			},
+		);
 	});
 }
 
