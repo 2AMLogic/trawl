@@ -20,22 +20,19 @@ _None._
 
 `loom:important`; taken before unlabelled work.
 
-- **#111**: Library: cookie helpers named in the README cannot be imported from the installed package
 - **#112**: README: bring the Status section up to date and link ROADMAP.md
 
 ## Ready
 
 Human-approved issues ready for implementation (`loom:issue`).
 
-- **#120**: Remove the pacingOrigin/cooldownOrigin aliases: three names for one stateOrigin
+- **#130**: tests: three local runCli helpers spawn the CLI with no timeout, so a hang wedges the whole node --test run
 
 ## In Progress
 
 Issues currently being built (`loom:building`).
 
-- **#111**: Library: cookie helpers named in the README cannot be imported from the installed package
-- **#116**: tests: cookies-fetch runBin tests fail instead of skipping when Chromium is only in HOME's Playwright cache
-- **#123**: Remove the duplicated test HTTP fixture servers: the helper group #115 missed (serve vs serveLogged, 23 copies of the listen/close trailer)
+_None._
 
 ## PRs Awaiting Review
 
@@ -47,15 +44,13 @@ _None._
 
 PRs that passed review and are queued for Champion auto-merge (`loom:pr`).
 
-- **#108**: docs: roadmap as of 2026-11-13
-- **#119**: feat: re-export the cookie helpers from the package entry point
+_None._
 
 ## Proposed
 
 Issues carrying `loom:curated`.
 
-- **#111**: Library: cookie helpers named in the README cannot be imported from the installed package *(curated)*
-- **#116**: tests: cookies-fetch runBin tests fail instead of skipping when Chromium is only in HOME's Playwright cache *(curated)*
+- **#130**: tests: three local runCli helpers spawn the CLI with no timeout, so a hang wedges the whole node --test run *(curated)*
 
 ## Proposed (Architect / Hermit)
 
@@ -71,12 +66,12 @@ _None._
 |------|-------|
 | Operator merge-risk holds | 0 |
 | Very important | 0 |
-| Important | 2 |
+| Important | 1 |
 | Ready (`loom:issue`) | 1 |
-| In Progress (`loom:building`) | 3 |
+| In Progress (`loom:building`) | 0 |
 | PRs awaiting review | 0 |
-| Approved PRs awaiting merge | 2 |
-| Curated | 2 |
+| Approved PRs awaiting merge | 0 |
+| Curated | 1 |
 | Architect / Hermit proposals | 0 |
 | Active epics | 0 |
 <!-- guide:plan-body:end -->

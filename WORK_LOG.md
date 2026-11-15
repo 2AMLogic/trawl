@@ -3,8 +3,22 @@
 Chronological record of merged PRs and closed issues, newest first.
 Maintained by the Loom Guide role; entries are appended automatically.
 
+### 2026-11-15
+
+- **PR #129**: fix: a signal-killed child reports code 124 from the shared runBin helper
+- **PR #128**: refactor: remove pacingOrigin/cooldownOrigin aliases of stateOrigin
+- **PR #108**: docs: roadmap as of 2026-11-13
+- **Issue #122** (closed): tests: runBin reports exit code 0 when the 60s timeout kills the child, so a hang looks like a silent empty-output failure
+- **Issue #120** (closed): Remove the pacingOrigin/cooldownOrigin aliases: three names for one stateOrigin
+
 ### 2026-11-14
 
+- **PR #127**: refactor: consolidate the copy-pasted test HTTP fixture servers into tests/helpers.mjs
+- **PR #126**: test: hand the guard's resolved browser to HOME-overridden runBin subprocesses
+- **PR #119**: feat: re-export the cookie helpers from the package entry point
+- **Issue #123** (closed): Remove the duplicated test HTTP fixture servers: the helper group #115 missed (serve vs serveLogged, 23 copies of the listen/close trailer)
+- **Issue #116** (closed): tests: cookies-fetch runBin tests fail instead of skipping when Chromium is only in HOME's Playwright cache
+- **Issue #111** (closed): Library: cookie helpers named in the README cannot be imported from the installed package
 - **PR #121**: test: share the browser guard, runBin and assertNoValue via tests/helpers.mjs
 - **PR #117**: feat: accept wait_until, settle_ms and timeout_ms on the MCP tools
 - **PR #114**: feat: honour `*` wildcard and `$` end anchor in robots.txt rule paths
