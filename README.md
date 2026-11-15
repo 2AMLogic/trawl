@@ -607,10 +607,16 @@ any CLI runs through the same state directory (`$TRAWL_STATE_DIR`).
 
 ## Status
 
-Early, but the first milestone set has landed: text/HTML/links/title/Markdown
-extraction, HAR capture, screenshots, `robots.txt` enforcement, and an MCP
-server. See the [issues](https://github.com/rjwalters/trawl/issues) for what's
-next.
+Early but usable: `trawl` renders client-side pages to text, HTML, links,
+title or Markdown, captures HAR traffic and screenshots, and enforces
+`robots.txt`. It detects auth walls, drives pages with click steps, paces
+requests across runs, and backs off politely on 429/503. Browser profiles
+(`trawl login`, `--profile`) carry authenticated sessions across runs, and
+cookies can be imported from a captured HAR for replay, with opt-in redaction
+of the HAR itself. See [CHANGELOG.md](CHANGELOG.md) for what has shipped and
+[ROADMAP.md](ROADMAP.md) for what's next; the
+[issues](https://github.com/rjwalters/trawl/issues) are the day-to-day
+tracker.
 
 ## Etiquette
 
