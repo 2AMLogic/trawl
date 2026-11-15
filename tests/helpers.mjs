@@ -115,16 +115,25 @@ export function binLink(prefix = "trawl-bin-") {
  * lookup runs an npm-installed `trawl` — rather than `node src/cli.mjs`.
  *
  * `env` is merged over `process.env`, and the 60s timeout means a hung
- * `trawl` fails this one test instead of hanging the whole `node --test` run.
+ * `trawl` fails this one test instead of hanging the whole `node --test` run:
+ * a signal-killed child resolves with `code: 124` (the `timeout(1)` convention)
+ * and `signal` set, never a silent `code: 0`. `opts` overrides the execFile
+ * options (e.g. a shorter `timeout` to test the kill path) without touching
+ * the default.
  */
-export function runBin(link, args, env) {
+export function runBin(link, args, env, opts = {}) {
 	return new Promise((resolve) => {
 		execFile(
 			link,
 			args,
-			{ env: { ...process.env, ...env }, timeout: 60000 },
+			{ env: { ...process.env, ...env }, timeout: 60000, ...opts },
 			(err, stdout, stderr) => {
-				resolve({ code: err?.code ?? 0, stdout, stderr });
+				resolve({
+					code: err?.code ?? (err?.signal ? 124 : 0),
+					signal: err?.signal ?? null,
+					stdout,
+					stderr,
+				});
 			},
 		);
 	});
