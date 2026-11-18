@@ -3,6 +3,12 @@
 Chronological record of merged PRs and closed issues, newest first.
 Maintained by the Loom Guide role; entries are appended automatically.
 
+### 2026-11-18
+
+- **PR #137**: ci: run CI on merge-group trees with isolated concurrency
+- **Issue #138** (closed): ci: CodeQL default-setup contexts are outside the merge-group audit's reach
+- **Issue #136** (closed): ci: qualify PR checks for GitHub merge queues
+
 ### 2026-11-15
 
 - **PR #134**: docs: refresh ROADMAP.md tracker state as of 2026-11-15
