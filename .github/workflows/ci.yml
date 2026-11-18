@@ -4,6 +4,16 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
+    types: [checks_requested]
+
+# Each run gets its own concurrency group, so nothing is ever cancelled or
+# superseded. The merge-group run keys on its unique queue head SHA
+# (github.sha), isolating it from PR and push runs; checkout then tests the
+# combined merge-group tree, not the PR head or main.
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   test:
