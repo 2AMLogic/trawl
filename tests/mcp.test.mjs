@@ -18,6 +18,7 @@ import {
 	renderOptionsFor,
 	truncate,
 } from "../src/mcp.mjs";
+import { DEFAULT_MAX_SCROLLS } from "../src/render.mjs";
 import { browserOpts as opts, fixtureUrl as sharedFixtureUrl } from "./helpers.mjs";
 
 // A render stub that records what it was handed and replays a canned result.
@@ -337,6 +338,150 @@ test("a rejected load control is a tool error and never reaches render", async (
 			},
 		},
 	]);
+});
+
+// --- scroll controls: scroll / max_scrolls -----------------------------------
+
+test("both tools advertise the scroll controls", () => {
+	for (const tool of TOOLS) {
+		const props = tool.inputSchema.properties;
+		assert.equal(props.scroll.type, "array");
+		assert.deepEqual(props.scroll.items, { type: "string", minLength: 1 });
+		assert.match(props.scroll.description, /bottom/);
+		assert.equal(props.max_scrolls.type, "integer");
+		assert.equal(props.max_scrolls.minimum, 0);
+		assert.equal(props.max_scrolls.default, DEFAULT_MAX_SCROLLS);
+	}
+});
+
+test("maps scroll and max_scrolls onto render's option names", () => {
+	for (const name of ["fetch_page", "fetch_links"]) {
+		const { options } = renderOptionsFor(name, {
+			url: "https://example.com",
+			scroll: ["bottom", "#more"],
+			max_scrolls: 5,
+		});
+		assert.deepEqual(options.scroll, ["bottom", "#more"]);
+		assert.equal(options.maxScrolls, 5);
+	}
+});
+
+// Same absent-keys discipline as the load controls above.
+test("omitting the scroll controls leaves the keys absent, not undefined", () => {
+	for (const name of ["fetch_page", "fetch_links"]) {
+		const { options } = renderOptionsFor(name, { url: "https://example.com" });
+		assert.equal("scroll" in options, false, `${name} set scroll`);
+		assert.equal("maxScrolls" in options, false, `${name} set maxScrolls`);
+	}
+});
+
+// Mirrors `requireString`, which treats an explicit null as "not supplied".
+test("an explicit null scroll control counts as absent", () => {
+	const { options } = renderOptionsFor("fetch_page", {
+		url: "u",
+		scroll: null,
+		max_scrolls: null,
+	});
+	assert.equal("scroll" in options, false);
+	assert.equal("maxScrolls" in options, false);
+});
+
+// "A cap alone requests zero steps": max_scrolls without scroll is valid and
+// maps to an empty step list with that cap.
+test("a cap alone maps through with zero steps", () => {
+	const { options } = renderOptionsFor("fetch_page", { url: "u", max_scrolls: 0 });
+	assert.deepEqual(options.scroll, []);
+	assert.equal(options.maxScrolls, 0);
+});
+
+test("rejects malformed scroll input, naming the allowed shapes", () => {
+	const cases = [
+		[{ scroll: "bottom" }, /"scroll" must be an array/],
+		[{ scroll: [42] }, /scroll step 1/],
+		[{ scroll: [""] }, /scroll step 1/],
+		[{ scroll: [null] }, /scroll step 1/],
+		[{ max_scrolls: -1 }, /"max_scrolls" must be a non-negative integer/],
+		[{ max_scrolls: 1.5 }, /"max_scrolls" must be a non-negative integer/],
+		[{ max_scrolls: "3" }, /"max_scrolls" must be a non-negative integer/],
+		// Over the default cap of 3: rejected here, before any render work.
+		[
+			{ scroll: ["bottom", "bottom", "bottom", "bottom"] },
+			/maxScrolls is 3/,
+		],
+	];
+	for (const [extra, pattern] of cases) {
+		for (const name of ["fetch_page", "fetch_links"]) {
+			assert.throws(
+				() => renderOptionsFor(name, { url: "u", ...extra }),
+				pattern,
+				`${name} accepted ${JSON.stringify(extra)}`,
+			);
+		}
+	}
+});
+
+test("a rejected scroll control is a tool error and never reaches render", async () => {
+	const render = stubRender("body");
+	const bad = [
+		{ scroll: "bottom" },
+		{ scroll: [42] },
+		{ scroll: ["bottom", "bottom", "bottom", "bottom"] },
+		{ max_scrolls: -1 },
+	];
+	for (const extra of bad) {
+		for (const name of ["fetch_page", "fetch_links"]) {
+			const result = await callTool(name, { url: "u", ...extra }, { render, env: {} });
+			assert.equal(result.isError, true, `${name} ${JSON.stringify(extra)}`);
+		}
+	}
+	assert.equal(render.calls.length, 0);
+
+	// ...and the server still serves the next, valid call.
+	const good = await callTool(
+		"fetch_page",
+		{ url: "u", scroll: ["bottom"], max_scrolls: 2 },
+		{ render, env: {} },
+	);
+	assert.equal(good.isError, undefined);
+	assert.equal(text(good), "body");
+	assert.deepEqual(render.calls, [
+		{
+			url: "u",
+			options: {
+				format: "text",
+				selector: undefined,
+				waitForSelector: undefined,
+				scroll: ["bottom"],
+				maxScrolls: 2,
+			},
+		},
+	]);
+});
+
+test("reports scrollsPerformed alongside the text, for both tools", async () => {
+	const calls = [];
+	const render = async (url, options) => {
+		calls.push({ url, options });
+		return { body: "extracted", status: 200, url, scrollsPerformed: 2 };
+	};
+	const page = await callTool(
+		"fetch_page",
+		{ url: "u", scroll: ["bottom", "bottom"] },
+		{ render, env: {} },
+	);
+	assert.equal(page.isError, undefined);
+	assert.equal(text(page), "extracted");
+	assert.equal(page.content.length, 1, "the count never enters the text");
+	assert.equal(page.scrollsPerformed, 2);
+
+	const links = await callTool(
+		"fetch_links",
+		{ url: "u", scroll: ["bottom"], max_scrolls: 1 },
+		{ render, env: {} },
+	);
+	assert.equal(text(links), "extracted");
+	assert.equal(links.scrollsPerformed, 2);
+	assert.equal(calls.length, 2);
 });
 
 // --- truncation -------------------------------------------------------------

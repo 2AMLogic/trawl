@@ -57,6 +57,16 @@ trawl mcp                  Serve fetch_page/fetch_links over MCP (stdio)
                             page.
       --then-wait <css>    After the preceding --click, block until this
                             selector appears
+      --scroll <target>    Scroll the loaded page before extracting:
+                            "bottom" scrolls to the page's current bottom
+                            (lazy loaders append rows when they see it),
+                            anything else is a CSS selector to bring into
+                            view. Repeatable; runs in the order given, after
+                            any --click, each followed by --settle. Fails
+                            (exit 1) if a selector never matches (within
+                            --timeout), or if a scroll would load another
+                            page.
+      --max-scrolls <n>    Cap on --scroll steps              (default: 3)
       --settle <ms>        Extra pause after load                (default: 0)
       --wait-until <ev>    load | domcontentloaded | networkidle
                                                         (default: networkidle)
@@ -139,6 +149,7 @@ trawl https://example.com -s '#main' -f html       # one subtree, as HTML
 trawl https://example.com -f md                    # article, as Markdown
 trawl https://example.com -w '.loaded' --settle 500
 trawl https://example.com --click '#show-details' --then-wait '#details' -s '#details'
+trawl https://example.com/listing --scroll bottom --scroll bottom --settle 300
 trawl https://example.com --har trace.har          # + the full network trace
 trawl https://example.com --screenshot page.png --full-page   # text + a PNG
 trawl login https://example.com --profile ~/.trawl/example    # sign in once
@@ -182,6 +193,38 @@ in the other page however late it starts; the 250 ms pause after each click
 is there so a click handler's short-timer navigation is caught and reported
 against the step that caused it. Scripts on the page can still make their
 own background requests in response to a click, as they would for a person.
+
+### Scrolling before extraction
+
+Many listing pages render a first screen of rows and load the rest as the
+reader scrolls, so a plain fetch returns only what the first viewport
+triggers. `--scroll <target>` scrolls the loaded page before extracting:
+`bottom` scrolls to the page's current bottom — where a lazy loader appends
+more rows once it sees you — and any other value is a CSS selector whose
+first match is scrolled into view. Repeat the flag to scroll several times;
+they run in the order given, after any `--click`, and each is followed by
+`--settle` so what the previous scroll appended is in place before the next
+one looks for the (moved) bottom:
+
+```sh
+trawl https://example.com/listing --scroll bottom --scroll bottom --settle 300
+trawl https://example.com/listing --scroll '#more-results' --settle 500
+```
+
+Scrolling happens inside the one page load: it reveals content on the page
+trawl already fetched, it never opens a second one. A scroll handler that
+tries to load a different page — the same guard clicks use — is stopped
+before the request goes out and fails the run, so scrolling stays paced and
+makes no request of its own beyond the page itself. A selector that never
+matches within `--timeout` fails the run naming the step and selector
+(`scroll step 1 of 2 ("#more"): no element matched, or it could not be scrolled into view, within 30000ms`).
+
+`--max-scrolls` caps how many steps a run may make, defaulting to 3; a
+longer listing raises it explicitly (`--max-scrolls 10`). A list longer than
+the cap, or a bad cap, is a usage error before any request is made. The run
+reports what it did as `performed 2 scrolls` on stderr (stdout stays exactly
+the extracted content), and library/MCP callers get the count as
+`scrollsPerformed`.
 
 ### Markdown
 
@@ -562,6 +605,21 @@ const { body } = await render("https://example.com/video", {
 });
 ```
 
+`render()` accepts the same scroll steps as `{ scroll: [...] }`: each entry
+is `"bottom"` or a CSS selector, run after any clicks with `{ maxScrolls }`
+(default 3) capping the list — an over-cap list rejects before any request.
+A step that cannot run rejects with a `ScrollError` (`err.name ===
+"ScrollError"`, with `err.step` counted from 1 and `err.selector` carrying
+the target), and every result reports the steps that ran as
+`scrollsPerformed`.
+
+```js
+const { body, scrollsPerformed } = await render("https://example.com/listing", {
+  scroll: ["bottom", "bottom"],
+  settle: 300,
+});
+```
+
 `render()` paces its `http(s)` requests across calls and processes the same
 way the CLI does (see [Etiquette](#etiquette)): `{ minIntervalMs }` sets the
 per-origin floor (default 1000, 0–60000), `{ pacing: false }` turns
@@ -598,8 +656,8 @@ talked into pressing things on it.
 
 | Tool | Arguments |
 | --- | --- |
-| `fetch_page` | `url`, `format?` (`text`\|`html`\|`links`\|`title`\|`markdown`), `selector?`, `wait_for?`, `wait_until?` (`load`\|`domcontentloaded`\|`networkidle`), `settle_ms?`, `timeout_ms?`, `respect_robots?` |
-| `fetch_links` | `url`, `selector?`, `wait_until?` (`load`\|`domcontentloaded`\|`networkidle`), `settle_ms?`, `timeout_ms?`, `respect_robots?` |
+| `fetch_page` | `url`, `format?` (`text`\|`html`\|`links`\|`title`\|`markdown`), `selector?`, `wait_for?`, `wait_until?` (`load`\|`domcontentloaded`\|`networkidle`), `settle_ms?`, `timeout_ms?`, `scroll?`, `max_scrolls?`, `respect_robots?` |
+| `fetch_links` | `url`, `selector?`, `wait_until?` (`load`\|`domcontentloaded`\|`networkidle`), `settle_ms?`, `timeout_ms?`, `scroll?`, `max_scrolls?`, `respect_robots?` |
 
 `respect_robots` is a boolean and defaults to false: `robots.txt` is advisory.
 Set it to `true` for strict mode (see [Etiquette](#etiquette)).
@@ -612,7 +670,10 @@ go idle" recipe above is reachable from an agent too: pass
 the 30,000 ms default. `settle_ms` and `timeout_ms` are capped at 600,000 ms,
 and `timeout_ms` must be at least 1 — unlike the CLI's `--timeout`, it will not
 take `0` as Playwright's "no timeout", which would hang a tool call with no way
-to cancel it. Results longer than 100,000 characters are
+to cancel it. Both tools also take the CLI's scrolling: `scroll` is an ordered
+list of `"bottom"` / CSS-selector steps and `max_scrolls` caps it at 3 by
+default — scrolling stays inside the one page load, and the result carries
+`scrollsPerformed` alongside the text. Results longer than 100,000 characters are
 truncated with a notice saying so; set `TRAWL_MCP_MAX_CHARS` to change the
 budget. A failed fetch comes back as a tool error — the server keeps serving.
 Tool calls are paced per origin with the default 1000 ms floor, shared with
