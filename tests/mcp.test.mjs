@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { BlockedError } from "../src/render.mjs";
 import {
 	DEFAULT_MAX_CHARS,
 	TOOLS,
@@ -352,6 +353,21 @@ test("a render failure becomes a tool error, not a throw", async () => {
 	);
 	assert.equal(result.isError, true);
 	assert.match(text(result), /ERR_NAME_NOT_RESOLVED/);
+});
+
+test("a blocked page becomes a tool error on both tools", async () => {
+	const boom = async () => {
+		throw new BlockedError(
+			["main-frame HTTP 403"],
+			{ url: "http://blocked.invalid/", status: 403 },
+		);
+	};
+	for (const name of ["fetch_page", "fetch_links"]) {
+		const result = await callTool(name, { url: "http://blocked.invalid/" }, { render: boom, env: {} });
+		assert.equal(result.isError, true);
+		assert.match(text(result), /blocked/);
+		assert.match(text(result), /HTTP 403/);
+	}
 });
 
 test("a missing browser becomes a tool error carrying the install hint", async () => {

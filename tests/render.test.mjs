@@ -14,7 +14,13 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { AuthWallError, detectAuthWall, render } from "../src/render.mjs";
+import {
+	AuthWallError,
+	BlockedError,
+	detectAuthWall,
+	detectChallenge,
+	render,
+} from "../src/render.mjs";
 import {
 	assertSpaced,
 	browserOpts as opts,
@@ -393,6 +399,40 @@ test("detectAuthWall: multiple signals all get reported", () => {
 		url: "https://example.com/login",
 	});
 	assert.equal(reasons.length, 3);
+});
+
+// --- challenge-interstitial detection (#142) ---
+
+test("detectChallenge: the title plus challenge elements is a block", () => {
+	const reasons = detectChallenge({ title: "Just a moment...", markerCount: 2 });
+	assert.equal(reasons.length, 2);
+	assert.match(reasons[0], /Just a moment/);
+	assert.match(reasons[1], /challenge element/);
+	// Surrounding whitespace in the real title does not matter.
+	assert.ok(detectChallenge({ title: "  Just a moment... ", markerCount: 1 }).length > 0);
+});
+
+test("detectChallenge: title alone, or elements alone, is not a block", () => {
+	assert.deepEqual(detectChallenge({ title: "Just a moment...", markerCount: 0 }), []);
+	assert.deepEqual(
+		detectChallenge({ title: 'Why you see "Just a moment..." on some sites', markerCount: 3 }),
+		[],
+	);
+	assert.deepEqual(detectChallenge({ title: "An ordinary article", markerCount: 0 }), []);
+	assert.deepEqual(detectChallenge({}), []);
+});
+
+test("BlockedError carries reasons, url and status", () => {
+	const err = new BlockedError(["main-frame HTTP 403"], {
+		url: "https://x.test/a",
+		status: 403,
+	});
+	assert.equal(err.name, "BlockedError");
+	assert.ok(err instanceof Error);
+	assert.equal(err.status, 403);
+	assert.equal(err.url, "https://x.test/a");
+	assert.match(err.message, /HTTP 403/);
+	assert.match(err.message, /cooldown/);
 });
 
 test("records the page's subresource requests in a HAR", opts, async () => {

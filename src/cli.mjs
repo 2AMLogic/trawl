@@ -32,6 +32,7 @@ import {
 } from "./pacing.mjs";
 import {
 	AuthWallError,
+	BlockedError,
 	BudgetError,
 	CooldownError,
 	FORMATS,
@@ -118,9 +119,9 @@ Options:
                             in $TRAWL_STATE_DIR, else
                             \${XDG_CACHE_HOME:-~/.cache}/trawl
       --ignore-cooldown    Fetch even if the origin is cooling down after a
-                            429/503 (see exit code 4). Bypasses the refusal
-                            only: robots.txt and pacing still apply, and a
-                            new 429/503 is still recorded.
+                            403/429/503 block (see exit code 4). Bypasses the
+                            refusal only: robots.txt and pacing still apply,
+                            and a new block is still recorded.
       --ignore-budget      Render even if the origin has used up its page
                             budget — 60 per rolling hour, 200 per rolling
                             day, shared by every trawl entry point through
@@ -184,7 +185,8 @@ Examples:
   trawl https://example.com/account --cookies cookies.txt \\
         --domain example.com
 
-Cooldowns: when a page answers 429 or 503, trawl records a per-origin
+Cooldowns: when a page answers 403, 429 or 503 — or the page served with 200
+carries an explicit anti-bot challenge signal — trawl records a per-origin
 cooldown in the same state directory — until its Retry-After (seconds or an
 HTTP-date), else 60s doubling per consecutive failure up to 1h. Until then,
 every trawl call to that origin is refused before any request is made. A 2xx
@@ -198,11 +200,13 @@ Past either limit, calls are refused before any request is made —
 robots.txt included — until a slot rolls free (exit code 5).
 --ignore-budget renders anyway; the attempt is still counted.
 
-Exit codes: 0 success, 22 page returned 4xx/5xx (as curl --fail), 3 page
-appears to be behind a login wall (see --no-auth-check / trawl login),
-4 origin is cooling down after a 429/503 (see --ignore-cooldown),
-5 origin used up its page budget (see --ignore-budget),
-1 usage or runtime error (including an unwritable budget state).
+Exit codes: 0 success, 22 page returned 4xx/5xx (as curl --fail) or was
+blocked — a main-frame 403, or a served-with-200 challenge, is refused with
+nothing on stdout and any --output file untouched, 3 page appears to be
+behind a login wall (see --no-auth-check / trawl login), 4 origin is cooling
+down after a block (see --ignore-cooldown), 5 origin used up its page budget
+(see --ignore-budget), 1 usage or runtime error (including an unwritable
+budget state).
 `;
 
 const FLAG_ALIASES = {
@@ -1001,13 +1005,17 @@ if (isMainModule()) {
 		// over, or pass --ignore-budget. Budget state that cannot be recorded
 		// at all stays exit 1: that is a broken state directory, not a spent
 		// budget.
+		// A block (a 403 denial, or a served-with-200 challenge) keeps curl
+		// --fail's 22 for the HTTP-level failure, with nothing on stdout.
 		process.exitCode =
-			err instanceof AuthWallError
-				? 3
-				: err instanceof CooldownError
-					? 4
-					: err instanceof BudgetError
-						? 5
-						: 1;
+			err instanceof BlockedError
+				? 22
+				: err instanceof AuthWallError
+					? 3
+					: err instanceof CooldownError
+						? 4
+						: err instanceof BudgetError
+							? 5
+							: 1;
 	}
 }

@@ -125,6 +125,31 @@ export class AuthWallError extends Error {
 	}
 }
 
+// Thrown instead of returning a body when the main-frame response was a
+// denial the caller should not treat as content: an HTTP 403 on the page
+// itself, or a served-with-200 page carrying an explicit anti-bot challenge
+// signal. Recorded against the origin as a cooldown (src/cooldown.mjs), so a
+// loop of calls stops at the first one. A distinct `name` (and the CLI's
+// exit code 22, curl --fail style) lets a calling agent tell "this origin
+// blocked us" apart from a successful read of a blocked-access explainer.
+export class BlockedError extends Error {
+	constructor(reasons, { url, status } = {}) {
+		super(
+			`page was blocked (HTTP ${status ?? "unknown"}; matched: ` +
+				`${reasons.join("; ")}). The origin was put on a cooldown, so the ` +
+				"next call to it refuses until that expires — wait it out, or pass " +
+				"--ignore-cooldown (ignoreCooldown: true) to request it anyway. " +
+				"A signed-in profile (`trawl login <origin> --profile <dir>`, then " +
+				"--profile <dir>) may get through where an anonymous fetch is " +
+				"blocked.",
+		);
+		this.name = "BlockedError";
+		this.reasons = reasons;
+		this.url = url;
+		this.status = status ?? null;
+	}
+}
+
 // Thrown when a click step cannot run: its selector never became visible,
 // its `waitFor` never appeared, or the click tried to navigate the page away.
 // `step` is 1-based so it matches the order the caller wrote the steps in.
@@ -351,6 +376,49 @@ async function probeAuthWall(page) {
 	return detectAuthWall({ text, hasPasswordField, url: page.url() });
 }
 
+// The one challenge interstitial trawl recognises, deliberately narrow: the
+// document title exactly "Just a moment..." (Cloudflare's managed-challenge
+// interstitial) together with at least one element of its challenge machinery
+// — its form/stage containers, a `cf-chl-*` widget id, or a script loaded
+// from `/cdn-cgi/challenge-platform`. Both halves must match, so an ordinary
+// article *discussing* blocked access (which may quote the title or the
+// markup, but as text) never qualifies, and neither does a stray title. A
+// miss fails open — the page renders as today — never closed.
+const CHALLENGE_TITLE = "just a moment...";
+const CHALLENGE_TITLE_DISPLAY = "Just a moment...";
+const CHALLENGE_SELECTOR =
+	"#challenge-form, #challenge-stage, #challenge-running, [id^='cf-chl'], " +
+	"script[src*='/cdn-cgi/challenge-platform']";
+
+// Pure and browser-free so it's unit-testable without Chromium: given the
+// signals a rendered page can offer, decide whether it is a challenge
+// interstitial and why. Returns the list of matched reasons (empty = not one).
+export function detectChallenge({ title, markerCount } = {}) {
+	const titleHit = (title ?? "").trim().toLowerCase() === CHALLENGE_TITLE;
+	if (!titleHit || !markerCount) return [];
+	return [
+		`document title is "${CHALLENGE_TITLE_DISPLAY}"`,
+		`${markerCount} challenge element${markerCount === 1 ? " matches" : "s match"} ` +
+			"(a challenge-form/stage/running container, a cf-chl-* id, or a " +
+			"/cdn-cgi/challenge-platform script)",
+	];
+}
+
+// Probes the live page for the signals `detectChallenge` needs. Same split as
+// `probeAuthWall`: this half is exercised by the render() end-to-end tests.
+async function probeChallenge(page) {
+	const title = await page.title().catch(() => "");
+	let markerCount = 0;
+	try {
+		markerCount = await page.locator(CHALLENGE_SELECTOR).count();
+	} catch {
+		// No usable DOM to probe (an unusual page object, a torn-down frame):
+		// a failed probe never blocks a render.
+		markerCount = 0;
+	}
+	return detectChallenge({ title, markerCount });
+}
+
 // Identify ourselves honestly by default, and link somewhere an operator can
 // read what this is and block it if they want. Only a fallback: an explicit
 // `userAgent` option (or the CLI's -A/--user-agent) still wins outright.
@@ -535,13 +603,14 @@ export async function render(url, options = {}) {
 	const stateDir =
 		opts.stateDir ?? opts.pacingStateDir ?? defaultStateDir();
 
-	// Per-origin cooldowns (src/cooldown.mjs): a main-frame 429/503 seen by
-	// any earlier run refuses this one with a CooldownError until it expires —
-	// checked here, before robots.txt or any browser work, and again right
-	// before each explicit page request. `ignoreCooldown` skips the refusal
-	// only; responses are still recorded. Non-http(s) URLs never touch it.
-	// Only the requested origin is admitted: a redirect to another origin is
-	// not intercepted, though a 429/503 there is recorded against it.
+	// Per-origin cooldowns (src/cooldown.mjs): a main-frame block (403/429/503,
+	// or a challenge page served with 200) seen by any earlier run refuses
+	// this one with a CooldownError until it expires — checked here, before
+	// robots.txt or any browser work, and again right before each explicit
+	// page request. `ignoreCooldown` skips the refusal only; responses are
+	// still recorded. Non-http(s) URLs never touch it. Only the requested
+	// origin is admitted: a redirect to another origin is not intercepted,
+	// though a block there is recorded against it.
 	const origin = stateOrigin(url);
 	const cooldown = origin ? createCooldownStore({ stateDir }) : null;
 	const admit = (checkOpts) => {
@@ -662,7 +731,7 @@ export async function render(url, options = {}) {
 			: { useStoredDelay: !opts.ignoreRobots };
 	// Each explicit page request re-checks the cooldown last thing before it
 	// is sent (after any pacing wait). For the networkidle-fallback retry this
-	// is what stops a retry straight into the 429/503 the first attempt saw.
+	// is what stops a retry straight into the block the first attempt saw.
 	const navigate = async (page, waitUntil, checkOpts) => {
 		const start = () => page.goto(url, { waitUntil, timeout: opts.timeout });
 		const gateAdmit = () => admit(checkOpts);
@@ -718,12 +787,13 @@ export async function render(url, options = {}) {
 	// "nothing went wrong" from "an error is already propagating".
 	let ok = false;
 	let page;
-	// Records every main-frame navigation response's 429/503 (or 2xx) as it
-	// arrives — before goto() resolves, so a navigation that then times out
-	// waiting for networkidle, or a run that fails later on, still leaves the
-	// cooldown behind. Iframes and subresources are ignored, and robots.txt
-	// is fetched outside the page (Node fetch, with the jar's cookies on a
-	// profile), so neither ever lands here.
+	// Records every main-frame navigation response's block — a 403/429/503
+	// status (or a 2xx) — as it arrives, before goto() resolves, so a
+	// navigation that then times out waiting for networkidle, or a run that
+	// fails later on, still leaves the cooldown behind. Iframes and
+	// subresources are ignored, and robots.txt is fetched outside the page
+	// (Node fetch, with the jar's cookies on a profile), so neither ever
+	// lands here.
 	const seenResponses = new WeakSet();
 	const onResponse = (response) => {
 		try {
@@ -831,6 +901,19 @@ export async function render(url, options = {}) {
 			: opts.settle;
 		if (settle > 0) await page.waitForTimeout(settle);
 
+		// A main-frame HTTP 403 is a block: refuse it before anything the
+		// caller could mistake for content — including auth-wall detection,
+		// which judges shape, not permission. The denial itself was already
+		// recorded against the responding origin by `onResponse`, so the next
+		// call refuses before any request. Nothing has been written anywhere
+		// at this point: stdout stays empty and an existing -o file survives.
+		if (response?.status() === 403) {
+			throw new BlockedError(["main-frame HTTP 403"], {
+				url: page.url(),
+				status: 403,
+			});
+		}
+
 		// Checked before extraction returns anything the caller could mistake for
 		// real content: a caller that only looks at exit code + stdout must not
 		// see a login page reported the same way as a successful fetch. Probes
@@ -845,7 +928,25 @@ export async function render(url, options = {}) {
 			const reasons = await probeAuthWall(page);
 			if (reasons.length > 0) throw new AuthWallError(reasons, page.url());
 		};
+		// The challenge probe runs *after* the auth-wall check, so a sign-in
+		// wall keeps AuthWallError (auth first, challenge second), and like it
+		// before extraction and again after the click steps.
+		const checkChallenge = async () => {
+			const reasons = await probeChallenge(page);
+			if (reasons.length === 0) return;
+			// A served-with-200 challenge records a 403-equivalent block
+			// against the responding origin — synchronously, like every
+			// recordFailure, so the next admission (including a navigation's
+			// networkidle fallback) refuses.
+			const at = cooldown ? stateOrigin(page.url()) : null;
+			if (at) cooldown.recordFailure(at, { status: 403 });
+			throw new BlockedError(reasons, {
+				url: page.url(),
+				status: response?.status() ?? null,
+			});
+		};
 		await checkAuth();
+		await checkChallenge();
 
 		// Click steps run after load, `waitForSelector` and `settle`, in the
 		// order given; each waits for its element to be visible, clicks it,
@@ -857,6 +958,7 @@ export async function render(url, options = {}) {
 				settle,
 			});
 			await checkAuth();
+			await checkChallenge();
 		}
 
 		const body = await extract(page, opts);
@@ -888,8 +990,9 @@ export async function render(url, options = {}) {
 			waitUntilFallback,
 		};
 	} finally {
-		// Land the cooldown writes before anything else can fail: a 429/503
-		// this run saw must be on disk for the next one, whatever happened.
+		// Land the cooldown writes before anything else can fail: a block
+		// (403/429/503 or a served-with-200 challenge) this run saw must be on
+		// disk for the next one, whatever happened.
 		page?.off("response", onResponse);
 		await cooldown?.flush();
 		// A recorded HAR is only flushed to disk when the *context* closes, so
