@@ -47,12 +47,19 @@ import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { formatDuration } from "./cooldown.mjs";
 import {
-	LockTimeoutError,
-	createFileLock,
+	ABSENT,
+	STORE_LOCK_TIMEOUT_MS as DEFAULT_LOCK_TIMEOUT_MS,
+	STORE_STALE_LOCK_MS as STALE_LOCK_MS,
+	acquireStateLock,
 	defaultStateDir,
-	originDigest,
+	stateFilesFor,
+	unavailableReason,
 	writeJsonAtomic,
 } from "./state.mjs";
+
+// The shared short-lock bounds (src/state.mjs), re-exported under the names
+// this module has always used.
+export { DEFAULT_LOCK_TIMEOUT_MS, STALE_LOCK_MS };
 
 // The starting policy for review: 60 renders per rolling hour, 200 per
 // rolling day, per requested origin.
@@ -61,13 +68,9 @@ export const DAILY_BUDGET = 200;
 export const HOURLY_WINDOW_MS = 60 * 60 * 1000;
 export const DAILY_WINDOW_MS = 24 * HOURLY_WINDOW_MS;
 
-// Holders keep a budget lock only for one read → count → write, so a short
-// wait is plenty; anything longer is a stuck or foreign lock.
-export const DEFAULT_LOCK_TIMEOUT_MS = 5000;
-export const STALE_LOCK_MS = 30 * 1000;
-
+// Holders keep a budget lock only for one read → count → write, so the
+// shared short-lock bounds above are plenty.
 const STATE_VERSION = 1;
-const ABSENT = new Set(["ENOENT", "ENOTDIR"]);
 // The largest instant a JavaScript Date can represent.
 const MAX_TIME_MS = 8.64e15;
 
@@ -161,21 +164,11 @@ export function createBudgetStore({
 } = {}) {
 	const dir = path.join(stateDir, "budget");
 
-	const files = (origin) => {
-		const digest = originDigest(origin);
-		return {
-			statePath: path.join(dir, `${digest}.json`),
-			lockPath: path.join(dir, `${digest}.lock`),
-		};
-	};
-
 	const unavailable = (origin, err) =>
 		new BudgetUnavailableError(
 			origin,
 			dir,
-			err instanceof LockTimeoutError
-				? `its lock stayed busy for ${lockTimeoutMs}ms`
-				: (err?.code ?? err?.message ?? String(err)),
+			unavailableReason(err, lockTimeoutMs),
 		);
 
 	// Count and record one attempt under the origin's lock, so two callers
@@ -184,7 +177,7 @@ export function createBudgetStore({
 	// when the attempt cannot be recorded.
 	async function reserve(origin, { enforce = true } = {}) {
 		if (!origin) return;
-		const { statePath, lockPath } = files(origin);
+		const { statePath, lockPath } = stateFilesFor(dir, origin);
 		let release;
 		try {
 			mkdirSync(dir, { recursive: true });
@@ -192,16 +185,16 @@ export function createBudgetStore({
 			throw unavailable(origin, err);
 		}
 		try {
-			release = await createFileLock({
+			release = await acquireStateLock({
 				lockPath,
 				timeoutMs: lockTimeoutMs,
 				staleMs: staleLockMs,
 				now,
-				...(sleep && { sleep }),
-				...(isAlive && { isAlive }),
-				...(pid !== undefined && { pid }),
-				...(host !== undefined && { host }),
-			}).acquire();
+				sleep,
+				isAlive,
+				pid,
+				host,
+			});
 		} catch (err) {
 			throw unavailable(origin, err);
 		}
@@ -283,6 +276,6 @@ export function createBudgetStore({
 		// store's.
 		record: (origin) => reserve(origin, { enforce: false }),
 		dir,
-		statePathFor: (origin) => files(origin).statePath,
+		statePathFor: (origin) => stateFilesFor(dir, origin).statePath,
 	};
 }

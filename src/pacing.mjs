@@ -41,6 +41,7 @@ import {
 	defaultStateDir,
 	originDigest,
 	realSleep,
+	stateFilesFor,
 	writeJsonAtomic,
 } from "./state.mjs";
 
@@ -163,9 +164,7 @@ export function createPacer({
 	if (!origin) throw new Error("createPacer requires an origin");
 	const minimum = validateMinInterval(minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS);
 	const dir = path.join(stateDir, "pacing");
-	const digest = originDigest(origin);
-	const statePath = path.join(dir, `${digest}.json`);
-	const lockPath = path.join(dir, `${digest}.lock`);
+	const { statePath, lockPath } = stateFilesFor(dir, origin);
 
 	// What this process itself knows, so pacing still works (within the run)
 	// when the directory is unusable, and a vanished state file cannot make

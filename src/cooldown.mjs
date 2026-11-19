@@ -41,12 +41,19 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
-	LockTimeoutError,
-	createFileLock,
+	ABSENT,
+	STORE_LOCK_TIMEOUT_MS as DEFAULT_LOCK_TIMEOUT_MS,
+	STORE_STALE_LOCK_MS as STALE_LOCK_MS,
+	acquireStateLock,
 	defaultStateDir,
-	originDigest,
+	stateFilesFor,
+	unavailableReason,
 	writeJsonAtomic,
 } from "./state.mjs";
+
+// The shared short-lock bounds (src/state.mjs), re-exported under the names
+// this module has always used.
+export { DEFAULT_LOCK_TIMEOUT_MS, STALE_LOCK_MS };
 
 export const COOLDOWN_STATUSES = new Set([403, 429, 503]);
 
@@ -55,15 +62,12 @@ export const FALLBACK_CAP_MS = 60 * 60 * 1000;
 // A streak with no new failure for this long starts over.
 export const STREAK_RESET_MS = 24 * 60 * 60 * 1000;
 
-// Holders keep a cooldown lock only for one read → modify → write, so a
-// short wait is plenty; anything longer is a stuck or foreign lock.
-export const DEFAULT_LOCK_TIMEOUT_MS = 5000;
-export const STALE_LOCK_MS = 30 * 1000;
+// Holders keep a cooldown lock only for one read → modify → write, so the
+// shared short-lock bounds above are plenty.
 
 // The largest instant a JavaScript Date can represent.
 const MAX_TIME_MS = 8.64e15;
 const STATE_VERSION = 1;
-const ABSENT = new Set(["ENOENT", "ENOTDIR"]);
 
 export class CooldownError extends Error {
 	constructor({ origin, until, now, status, retrySuppressed = false }) {
@@ -289,28 +293,18 @@ export function createCooldownStore({
 	const degrade = (err) => {
 		if (degraded) return;
 		degraded = true;
-		const why =
-			err instanceof LockTimeoutError
-				? `its lock stayed busy for ${lockTimeoutMs}ms`
-				: (err?.code ?? err?.message ?? String(err));
 		warn(
-			`cooldown state directory ${dir} is unusable (${why}); cooldowns ` +
+			`cooldown state directory ${dir} is unusable (${unavailableReason(err, lockTimeoutMs)}); cooldowns ` +
 				"from earlier runs may be missed and new ones last only for this run.",
 		);
-	};
-
-	const files = (origin) => {
-		const digest = originDigest(origin);
-		return {
-			statePath: path.join(dir, `${digest}.json`),
-			lockPath: path.join(dir, `${digest}.lock`),
-		};
 	};
 
 	function readDisk(origin) {
 		if (degraded) return null;
 		try {
-			return parseRecord(readFileSync(files(origin).statePath, "utf8"));
+			return parseRecord(
+				readFileSync(stateFilesFor(dir, origin).statePath, "utf8"),
+			);
 		} catch (err) {
 			// No file — or a path that cannot hold one — is simply "no
 			// cooldown"; that only becomes a problem (and a warning) if this run
@@ -351,20 +345,20 @@ export function createCooldownStore({
 
 	async function update(origin, modify) {
 		if (degraded) return null;
-		const { statePath, lockPath } = files(origin);
+		const { statePath, lockPath } = stateFilesFor(dir, origin);
 		let release;
 		try {
 			mkdirSync(dir, { recursive: true });
-			release = await createFileLock({
+			release = await acquireStateLock({
 				lockPath,
 				timeoutMs: lockTimeoutMs,
 				staleMs: staleLockMs,
 				now,
-				...(sleep && { sleep }),
-				...(isAlive && { isAlive }),
-				...(pid !== undefined && { pid }),
-				...(host !== undefined && { host }),
-			}).acquire();
+				sleep,
+				isAlive,
+				pid,
+				host,
+			});
 		} catch (err) {
 			degrade(err);
 			return null;
@@ -454,6 +448,6 @@ export function createCooldownStore({
 			return degraded;
 		},
 		dir,
-		statePathFor: (origin) => files(origin).statePath,
+		statePathFor: (origin) => stateFilesFor(dir, origin).statePath,
 	};
 }

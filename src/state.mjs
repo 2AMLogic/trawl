@@ -2,10 +2,10 @@
 // file is named, how it is replaced atomically, and the per-file
 // interprocess lock that serializes a read → modify → write.
 //
-// Shared by per-origin pacing (src/pacing.mjs) and per-origin cooldowns
-// (src/cooldown.mjs). Each feature keeps its own subdirectory and its own
-// lock files, so neither ever rewrites the other's fields and no caller ever
-// needs to hold two locks at once.
+// Shared by per-origin pacing (src/pacing.mjs), cooldowns (src/cooldown.mjs)
+// and page budgets (src/budget.mjs). Each feature keeps its own subdirectory
+// and its own lock files, so none ever rewrites another's fields and no
+// caller ever needs to hold two locks at once.
 //
 // Nothing fetched is ever written here: no URLs, credentials, cookies, or
 // page content. Files are named by a digest of the canonical origin.
@@ -57,6 +57,16 @@ export function stateOrigin(url) {
 
 export function originDigest(origin) {
 	return createHash("sha256").update(origin).digest("hex").slice(0, 32);
+}
+
+// `<dir>/<digest>.json` and `<dir>/<digest>.lock` — the two files every
+// per-origin store keeps for one origin under its own subdirectory.
+export function stateFilesFor(dir, origin) {
+	const digest = originDigest(origin);
+	return {
+		statePath: path.join(dir, `${digest}.json`),
+		lockPath: path.join(dir, `${digest}.lock`),
+	};
 }
 
 export const uniqueToken = (pid = process.pid) =>
@@ -248,4 +258,53 @@ export function createFileLock({
 	}
 
 	return { acquire, lockPath };
+}
+
+// --- per-origin store glue ----------------------------------------------
+//
+// The plumbing every store wraps around the pieces above, so budget.mjs,
+// cooldown.mjs and pacing.mjs cannot drift apart.
+
+// A store that holds its lock for exactly one read → modify → write (budget,
+// cooldown) waits this long before giving up; anything longer is a stuck or
+// foreign lock. (pacing.mjs holds its lock across a wait, so it keeps its
+// own larger bounds.)
+export const STORE_LOCK_TIMEOUT_MS = 5000;
+export const STORE_STALE_LOCK_MS = 30 * 1000;
+
+// A state read that fails this way means "no file yet", not broken state.
+export const ABSENT = new Set(["ENOENT", "ENOTDIR"]);
+
+// Acquire an origin's lock for one read → modify → write, forwarding only
+// the injectables the caller actually provided so createFileLock's defaults
+// fill the rest. Resolves to the release function.
+export function acquireStateLock({
+	lockPath,
+	timeoutMs,
+	staleMs,
+	now,
+	sleep,
+	isAlive,
+	pid,
+	host,
+}) {
+	return createFileLock({
+		lockPath,
+		timeoutMs,
+		staleMs,
+		now,
+		...(sleep && { sleep }),
+		...(isAlive && { isAlive }),
+		...(pid !== undefined && { pid }),
+		...(host !== undefined && { host }),
+	}).acquire();
+}
+
+// Why a state directory proved unusable: a lock that stayed busy is named as
+// such, anything else by its code (or message). The reason string budget and
+// cooldown both report.
+export function unavailableReason(err, lockTimeoutMs) {
+	return err instanceof LockTimeoutError
+		? `its lock stayed busy for ${lockTimeoutMs}ms`
+		: (err?.code ?? err?.message ?? String(err));
 }
