@@ -180,7 +180,7 @@ test("imports a HAR and warns when it came from a different browser", async () =
 test("no User-Agent warning for a HAR trawl itself recorded, or one without a UA", async () => {
 	const dir = tempDir();
 	try {
-		for (const ua of ["trawl/0.3.0 (+https://github.com/rjwalters/trawl)", null]) {
+		for (const ua of ["trawl/0.3.0 (+https://github.com/2AMLogic/trawl)", null]) {
 			const file = writeSource(dir, "trace.har", har(ua));
 			const { deps, text } = fakeDeps({ profileDir: "/p" });
 			assert.equal(await runCookiesImport([file, "--profile", "/p"], deps), 0);
@@ -216,7 +216,7 @@ test("browserFamily tells the common browsers apart", () => {
 		"Safari",
 	);
 	assert.equal(browserFamily("curl/8.7.1"), "curl");
-	assert.equal(browserFamily("trawl/0.3.0 (+https://github.com/rjwalters/trawl)"), "trawl");
+	assert.equal(browserFamily("trawl/0.3.0 (+https://github.com/2AMLogic/trawl)"), "trawl");
 });
 
 // --- --domain / --allow / --include-auth through the CLI argv ---

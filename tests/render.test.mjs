@@ -909,7 +909,7 @@ test("identifies itself with a default trawl User-Agent on the robots.txt fetch"
 	assert.deepEqual(seen[0][0], "http://127.0.0.1:1/robots.txt");
 	assert.match(
 		seen[0][1],
-		/^trawl\/\d[\w.-]* \(\+https:\/\/github\.com\/rjwalters\/trawl\)$/,
+		/^trawl\/\d[\w.-]* \(\+https:\/\/github\.com\/2AMLogic\/trawl\)$/,
 	);
 
 	// An explicit userAgent still wins outright.

@@ -737,7 +737,7 @@ Browser profiles (`trawl login`, `--profile`) carry authenticated sessions
 across runs, and cookies can be imported from a captured HAR for replay,
 with opt-in redaction of the HAR itself. See [CHANGELOG.md](CHANGELOG.md) for what has shipped and
 [ROADMAP.md](ROADMAP.md) for what's next; the
-[issues](https://github.com/rjwalters/trawl/issues) are the day-to-day
+[issues](https://github.com/2AMLogic/trawl/issues) are the day-to-day
 tracker.
 
 ## Etiquette
@@ -912,7 +912,7 @@ default rather than asking you to promise you will.
     but with a distinct message (and exit code 1) saying the state is
     unavailable, not that the budget is spent.
 - **It identifies itself**: the default `User-Agent` is
-  `trawl/<version> (+https://github.com/rjwalters/trawl)`, so an operator
+  `trawl/<version> (+https://github.com/2AMLogic/trawl)`, so an operator
   reading their logs can see what hit them and block it if they want. Every
   request keeps it (the `robots.txt` request included) unless you pass
   `-A`/`--user-agent` yourself.

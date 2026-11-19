@@ -19,7 +19,7 @@ import {
 } from "../src/robots.mjs";
 import { AWKWARD, assertNoValue, listen } from "./helpers.mjs";
 
-const UA = "trawl/0.1.0 (+https://github.com/rjwalters/trawl)";
+const UA = "trawl/0.1.0 (+https://github.com/2AMLogic/trawl)";
 
 function verdict(text, path, userAgent = UA) {
 	return evaluateRobots(text, { userAgent, path });

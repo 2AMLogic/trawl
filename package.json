@@ -12,11 +12,11 @@
     "javascript-rendering",
     "cli"
   ],
-  "homepage": "https://github.com/rjwalters/trawl",
-  "bugs": "https://github.com/rjwalters/trawl/issues",
+  "homepage": "https://github.com/2AMLogic/trawl",
+  "bugs": "https://github.com/2AMLogic/trawl/issues",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rjwalters/trawl.git"
+    "url": "git+https://github.com/2AMLogic/trawl.git"
   },
   "license": "MIT",
   "author": "Robb Walters",
