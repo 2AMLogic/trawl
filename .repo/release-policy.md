@@ -99,18 +99,22 @@ npm publish is **automated**: publishing the GitHub Release in
 `npm publish --provenance --access public` under `id-token: write`. Hand off
 with these steps:
 
-1. Watch the publish workflow finish:
+1. Approve the deployment: the publish job runs in the protected
+   `npm-publish` environment, so the run pauses here until the owner approves
+   it in GitHub (Actions → the run → Review deployments).
+2. Watch the publish workflow finish:
    `gh run watch "$(gh run list --workflow=release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"`
    (or `gh run list --workflow=release.yml --limit 1` for a one-shot look).
-2. Verify it took: `npm view @rjwalters/trawl version` prints the new version.
-3. Refresh the global install so the `PATH` binary reflects the release —
+3. Verify it took: `npm view @rjwalters/trawl version` prints the new version.
+4. Refresh the global install so the `PATH` binary reflects the release —
    the global install is a registry copy, not a link into a checkout:
    `npm i -g @rjwalters/trawl` (see `CLAUDE.md`).
 
 **One-time operator setup (owner, npmjs.com):** register the trusted
 publisher for `@rjwalters/trawl` against this repository
-(`2AMLogic/trawl`) and the workflow filename `release.yml`, before the first
-release published this way. Until that is done the workflow's publish fails
+(`2AMLogic/trawl`), the workflow filename `release.yml` and the environment
+`npm-publish`, before the first release published this way:
+`npm trust github @rjwalters/trawl --file release.yml --repo 2AMLogic/trawl --env npm-publish --allow-publish`. Until that is done the workflow's publish fails
 and the **manual fallback** applies — from the tagged tree, not `main`
 (the tag is the verified release revision):
 
