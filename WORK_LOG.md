@@ -5,6 +5,11 @@ Maintained by the Loom Guide role; entries are appended automatically.
 
 ### 2026-11-19
 
+- **PR #173**: fix: exempt loopback origins from the page budget and default pacing floor
+- **PR #172**: ci: gate npm publishing on the protected npm-publish environment
+- **PR #171**: refactor: fold per-origin state-store glue into shared state.mjs helpers
+- **Issue #169** (closed): Consolidate per-origin state-store boilerplate (lock glue, file paths, ABSENT) into state.mjs
+- **Issue #164** (closed): Exempt loopback origins from the page budget and default pacing
 - **PR #168**: docs: add .repo/release-policy.md for release-PR flow and manual npm publish
 - **PR #167**: docs: require a CHANGELOG [Unreleased] entry for user-visible changes
 - **PR #163**: chore: point repo URLs at 2AMLogic/trawl
