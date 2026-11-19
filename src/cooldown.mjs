@@ -1,7 +1,9 @@
-// Per-origin cooldowns after a 429 / 503, remembered across invocations.
+// Per-origin cooldowns after a block, remembered across invocations.
 //
-// When an origin answers a page navigation with 429 Too Many Requests or 503
-// Service Unavailable, a loop of `trawl` calls used to retry it immediately.
+// When an origin answers a page navigation with 403 Forbidden, 429 Too Many
+// Requests or 503 Service Unavailable — or the page it served with 200 turns
+// out to carry an explicit anti-bot challenge signal (src/render.mjs) — a
+// loop of `trawl` calls used to retry it immediately.
 // This module records, per origin, until when the origin asked to be left
 // alone — from `Retry-After` (delta-seconds or an HTTP-date) when it sent one,
 // else an exponential backoff (60 s × 2^(n−1), capped at 1 h) — and refuses
@@ -9,7 +11,8 @@
 // the cooldown has passed. The refusal is a CooldownError (CLI exit 4).
 //
 // Policy, in one place:
-//   - 429 and 503 share one per-origin failure streak, Retry-After or not.
+//   - 403, 429 and 503 share one per-origin failure streak, Retry-After or
+//     not (a challenge page served with 200 is recorded as a 403).
 //   - A valid Retry-After wins outright, even when longer than the fallback
 //     cap; zero or a past date means "no wait". Anything else (malformed,
 //     negative, absurdly large) falls back to the backoff.
@@ -45,7 +48,7 @@ import {
 	writeJsonAtomic,
 } from "./state.mjs";
 
-export const COOLDOWN_STATUSES = new Set([429, 503]);
+export const COOLDOWN_STATUSES = new Set([403, 429, 503]);
 
 export const FALLBACK_BASE_MS = 60 * 1000;
 export const FALLBACK_CAP_MS = 60 * 60 * 1000;
@@ -65,7 +68,7 @@ const ABSENT = new Set(["ENOENT", "ENOTDIR"]);
 export class CooldownError extends Error {
 	constructor({ origin, until, now, status, retrySuppressed = false }) {
 		const remainingMs = Math.max(0, until - now);
-		const why = status ? `HTTP ${status}` : "a 429/503 response";
+		const why = status ? `HTTP ${status}` : "a blocked response";
 		super(
 			`${origin} is cooling down after ${why} until ` +
 				`${new Date(until).toISOString()} (${formatDuration(remainingMs)} ` +
@@ -224,7 +227,7 @@ export function parseRecord(raw) {
 	return { until, failures, lastFailureAt, generation, status };
 }
 
-// The record after one more 429/503 received at `now`.
+// The record after one more block (403/429/503) received at `now`.
 export function nextFailureRecord(prev, { now, status, retryAfter }) {
 	const fresh =
 		prev?.lastFailureAt != null && now - prev.lastFailureAt < STREAK_RESET_MS;
@@ -390,9 +393,9 @@ export function createCooldownStore({
 		return chain;
 	};
 
-	// A 429/503 main-frame response. The in-memory record is updated
-	// synchronously, so a later request in the same call sees it even before
-	// (or without) the write landing.
+	// A blocked (403/429/503) main-frame response. The in-memory record is
+	// updated synchronously, so a later request in the same call sees it even
+	// before (or without) the write landing.
 	function recordFailure(origin, { status, retryAfter, receivedAt = now() }) {
 		if (!origin) return chain;
 		const event = { now: receivedAt, status, retryAfter };

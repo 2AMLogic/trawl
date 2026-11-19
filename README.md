@@ -84,9 +84,9 @@ trawl mcp                  Serve fetch_page/fetch_links over MCP (stdio)
                             in $TRAWL_STATE_DIR, else
                             ${XDG_CACHE_HOME:-~/.cache}/trawl
       --ignore-cooldown    Fetch even if the origin is cooling down after a
-                            429/503 (see exit code 4). Bypasses the refusal
-                            only: robots.txt and pacing still apply, and a
-                            new 429/503 is still recorded.
+                            403/429/503 block (see exit code 4). Bypasses the
+                            refusal only: robots.txt and pacing still apply,
+                            and a new block is still recorded.
       --profile <dir>      Persistent browser profile (cookies/localStorage
                             survive across runs); also $TRAWL_PROFILE_DIR.
                             Populate one with "trawl login" (which defaults
@@ -211,10 +211,19 @@ The same recipe also works around **anti-bot interstitials** — a "checking
 your browser" / "this website uses a security service" page that some sites
 (HathiTrust's full-view search among them) serve behind a socket that never
 goes idle, so the default `networkidle` wait hangs on the interstitial
-itself rather than the real page. `trawl` does not detect or auto-retry past
-these (they vary too much by vendor to do reliably); pass
+itself rather than the real page. `trawl` does not auto-retry past these
+(they vary too much by vendor to do reliably); pass
 `--wait-until domcontentloaded --settle 15000` (give the interstitial's own
 JS challenge time to resolve and redirect) to get through it.
+
+One interstitial `trawl` does recognise: a page served with `200 OK` whose
+title is exactly "Just a moment..." together with Cloudflare's challenge
+machinery (`challenge-form`/`challenge-stage` containers, a `cf-chl-*`
+element id, or a `/cdn-cgi/challenge-platform` script) is treated as a
+block, not as content — exit `22`, nothing on stdout, and the origin put on
+a cooldown like a 403. An ordinary article *about* blocked access renders
+normally; only that explicit title-plus-machinery combination is treated as
+a challenge.
 
 ### HAR capture
 
@@ -261,11 +270,13 @@ page load yields both the text on stdout and the PNG on disk. `--full-page`
 captures the whole scroll height instead of just the viewport, and
 `--viewport <WxH>` sets the window size the page is rendered at.
 
-Exit codes: `0` success, `22` page returned 4xx/5xx (as `curl --fail`), `3`
+Exit codes: `0` success, `22` page returned 4xx/5xx (as `curl --fail`) or
+was blocked — a main-frame 403, or a served-with-200 challenge (above), is
+refused with nothing on stdout and any `--output` file untouched — `3`
 page appears to be behind a login wall (see "Auth walls" below), `4` the
-origin is cooling down after a 429/503 and nothing was requested (see
-[Etiquette](#etiquette); `--ignore-cooldown` overrides), `1` usage or runtime
-error.
+origin is cooling down after a block (403/429/503 or a challenge) and nothing
+was requested (see [Etiquette](#etiquette); `--ignore-cooldown` overrides),
+`1` usage or runtime error.
 
 ### Auth walls & signed-in sessions
 
@@ -550,10 +561,14 @@ per-origin floor (default 1000, 0–60000), `{ pacing: false }` turns
 cross-run pacing off, and `{ stateDir }` overrides where the state is
 kept (default `$TRAWL_STATE_DIR`, else `${XDG_CACHE_HOME:-~/.cache}/trawl`;
 the older `{ pacingStateDir }` still moves the pacing state alone). A request
-to an origin that is cooling down after a 429/503 rejects with a
+to an origin that is cooling down after a block (403/429/503, or a challenge
+page served with 200) rejects with a
 `CooldownError` (exported; `code: "TRAWL_COOLDOWN"`, with `origin`, `until`
 in epoch ms, and `remainingMs`) before any network or browser work;
-`{ ignoreCooldown: true }` overrides it for that call.
+`{ ignoreCooldown: true }` overrides it for that call. A main-frame 403, or
+a challenge page served with 200, makes `render()` reject with a
+`BlockedError` (exported; with `reasons`, `url` and `status`) — nothing is
+extracted and the block is recorded against the origin.
 
 ### As an MCP server
 
@@ -610,7 +625,8 @@ any CLI runs through the same state directory (`$TRAWL_STATE_DIR`).
 Early but usable: `trawl` renders client-side pages to text, HTML, links,
 title or Markdown, captures HAR traffic and screenshots, and enforces
 `robots.txt`. It detects auth walls, drives pages with click steps, paces
-requests across runs, and backs off politely on 429/503. Browser profiles
+requests across runs, and backs off politely on blocks (403/429/503, and
+challenge pages served with 200). Browser profiles
 (`trawl login`, `--profile`) carry authenticated sessions across runs, and
 cookies can be imported from a captured HAR for replay, with opt-in redaction
 of the HAR itself. See [CHANGELOG.md](CHANGELOG.md) for what has shipped and
@@ -707,17 +723,21 @@ default rather than asking you to promise you will.
     `robots.txt` request and the page request within the one run.
     `--ignore-robots` skips `robots.txt` and its `Crawl-delay`, but not the
     `--min-interval` floor.
-- **A 429 or 503 puts the origin on a cooldown, across runs.** When the page
-  navigation itself answers `429 Too Many Requests` or `503 Service
-  Unavailable`, `trawl` still returns that page (exit `22`), and records
-  that the origin asked to be left alone. Until the cooldown ends, every
-  later `trawl` call to that origin fails fast with **exit code 4** and a
-  message naming the origin, the UTC expiry, and the time left — before the
-  `robots.txt` request, before any browser starts, with nothing on stdout.
+- **A block puts the origin on a cooldown, across runs.** When the page
+  navigation itself answers `403 Forbidden`, `429 Too Many Requests` or `503
+  Service Unavailable`, or the page served with `200` carries an explicit
+  anti-bot challenge signal (above), `trawl` refuses the page (exit `22`,
+  nothing on stdout, an existing `--output` file untouched) and records that
+  the origin asked to be left alone — for `429`/`503` it still returns the
+  page first (exit `22`), for `403` and challenges it stops before
+  extraction. Until the cooldown ends, every later `trawl` call to that
+  origin fails fast with **exit code 4** and a message naming the origin,
+  the UTC expiry, and the time left — before the `robots.txt` request,
+  before any browser starts, with nothing on stdout.
   - *How long:* the response's `Retry-After`, as delta-seconds or an
     HTTP-date, honored as sent (even beyond an hour); `0` or a past date
     means no wait. Without a usable `Retry-After`, 60 s doubling per
-    consecutive 429/503 from that origin — 60 s, 2 min, 4 min, … — capped
+    consecutive block from that origin — 60 s, 2 min, 4 min, … — capped
     at 1 h. The failure streak outlives the cooldown, so a site that keeps
     failing keeps backing off; a 2xx page response, or 24 h with no
     failure, resets it. Other statuses and network errors leave it alone.
@@ -725,7 +745,7 @@ default rather than asking you to promise you will.
     `domcontentloaded` retry after a `networkidle` timeout, which is itself
     skipped when the first attempt just put the origin on a cooldown).
     Subresources, iframes, the `robots.txt` request (see above), and
-    `trawl login` never record a cooldown. A 429/503 at the end of a
+    `trawl login` never record a cooldown. A block at the end of a
     redirect is recorded against the origin that sent it; the check before
     a run looks only at the origin you asked for, so a redirect into a
     cooling-down origin is not stopped in advance.
@@ -742,7 +762,7 @@ default rather than asking you to promise you will.
     run only.
   - *Overriding it:* `--ignore-cooldown` (library: `ignoreCooldown: true`)
     sends the request anyway for that one call. It does not delete the
-    record, a new 429/503 is still recorded, and `robots.txt` and pacing
+    record, a new block is still recorded, and `robots.txt` and pacing
     still apply; `--ignore-robots` and `--no-pacing` do not skip the
     cooldown either. To forget every cooldown, delete the `cooldown/`
     directory.

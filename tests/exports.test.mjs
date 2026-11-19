@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
 	AuthWallError,
+	BlockedError,
 	browserWouldReject,
 	ClickError,
 	CooldownError,
@@ -107,11 +108,12 @@ test("includeAuth is what keeps the sign-in cookie a library caller came for", (
 
 test("the existing exports keep working", () => {
 	assert.equal(typeof render, "function");
-	for (const Err of [AuthWallError, ClickError, CooldownError]) {
+	for (const Err of [AuthWallError, BlockedError, ClickError, CooldownError]) {
 		assert.equal(typeof Err, "function");
 		assert.ok(Err.prototype instanceof Error);
 	}
 	assert.equal(new AuthWallError([]).name, "AuthWallError");
+	assert.equal(new BlockedError([], {}).name, "BlockedError");
 	assert.equal(new ClickError("boom", {}).name, "ClickError");
 });
 

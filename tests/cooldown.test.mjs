@@ -37,7 +37,7 @@ import {
 } from "../src/cooldown.mjs";
 import { callTool } from "../src/mcp.mjs";
 import { createPacer } from "../src/pacing.mjs";
-import { CooldownError as ExportedCooldownError, render } from "../src/render.mjs";
+import { AuthWallError, BlockedError, CooldownError as ExportedCooldownError, render } from "../src/render.mjs";
 import { binLink, browserOpts as browser, runBin, serve } from "./helpers.mjs";
 
 // render() defaults to $TRAWL_STATE_DIR; never let it fall through to the
@@ -145,6 +145,16 @@ test("429 and 503 share a streak, Retry-After or not, and it survives expiry", (
 	assert.equal(r.generation, 3);
 });
 
+test("a 403 joins the streak: Retry-After, then fallback doubling", () => {
+	let r = nextFailureRecord(null, { now: T0, status: 403, retryAfter: "120" });
+	assert.deepEqual(r, { until: T0 + 120_000, failures: 1, lastFailureAt: T0, generation: 1, status: 403 });
+	// The next failure — whatever its status — is the second streak step.
+	r = nextFailureRecord(r, { now: T0 + 130_000, status: 429, retryAfter: "junk" });
+	assert.equal(r.failures, 2);
+	assert.equal(r.status, 429);
+	assert.equal(r.until, T0 + 130_000 + 120_000);
+});
+
 test("a streak with no failure for 24h starts over", () => {
 	let r = { until: T0 + 3_600_000, failures: 7, lastFailureAt: T0, generation: 7, status: 503 };
 	const later = T0 + STREAK_RESET_MS;
@@ -199,6 +209,17 @@ test("stored records are validated field by field", () => {
 	}
 });
 
+test("a 403 status round-trips through the record", () => {
+	const good = { version: 1, until: T0, failures: 1, lastFailureAt: T0, generation: 1, status: 403 };
+	assert.deepEqual(parseRecord(JSON.stringify(good)), {
+		until: T0,
+		failures: 1,
+		lastFailureAt: T0,
+		generation: 1,
+		status: 403,
+	});
+});
+
 test("formatDuration rounds up and drops empty units", () => {
 	assert.equal(formatDuration(0), "0s");
 	assert.equal(formatDuration(1), "1s");
@@ -238,6 +259,26 @@ test("a recorded cooldown refuses later readers until it expires", async () => {
 	c.advance(90_000);
 	b.check(ORIGIN);
 	assert.deepEqual(a.warnings.concat(b.warnings), []);
+});
+
+test("a 403 block's refusal names HTTP 403", async () => {
+	const dir = freshDir();
+	const c = clock();
+	const a = store(dir, c);
+	a.recordFailure(ORIGIN, { status: 403 });
+	await a.flush();
+
+	const b = store(dir, c);
+	c.advance(30_000);
+	assert.throws(
+		() => b.check(ORIGIN),
+		(err) => {
+			assert.ok(err instanceof CooldownError);
+			assert.equal(err.status, 403);
+			assert.match(err.message, /^https:\/\/example\.test is cooling down after HTTP 403 until 2026-11-03T12:01:00\.000Z \(30s from now\)/);
+			return true;
+		},
+	);
 });
 
 test("a zero Retry-After records the failure without a wait", async () => {
@@ -734,6 +775,194 @@ test("a 200 page with a 503 subresource and an iframe 503 keeps the normal fallb
 	assert.equal(existsSync(path.join(stateDir, "cooldown")), false);
 });
 
+// --- top-level blocks: a main-frame 403, and a challenge served with 200 ---
+
+test("a main-frame 403 is a block: it rejects before extraction, records, and refuses the next run", browser, async () => {
+	const stateDir = freshDir();
+	let pageResponse = respond(403, { "retry-after": "120" });
+	const s = await serve({
+		"/robots.txt": ROBOTS,
+		"/page": (req, res) => pageResponse(req, res),
+	});
+	const run = (extra = {}) => render(`${s.origin}/page`, { stateDir, minIntervalMs: 0, ...extra });
+	try {
+		await assert.rejects(() => run(), (err) => {
+			assert.ok(err instanceof BlockedError, err.stack);
+			assert.equal(err.status, 403);
+			assert.equal(err.url, `${s.origin}/page`);
+			assert.match(err.message, /HTTP 403/);
+			return true;
+		});
+		const rec = parseRecord(
+			readFileSync(createCooldownStore({ stateDir }).statePathFor(s.origin), "utf8"),
+		);
+		assert.equal(rec.failures, 1);
+		assert.equal(rec.status, 403);
+		assert.ok(rec.until > Date.now() + 100_000);
+
+		const hits = s.hits.length;
+		await assert.rejects(() => run(), (err) => err instanceof CooldownError && err.origin === s.origin);
+		await assert.rejects(() => run({ ignoreRobots: true }), CooldownError);
+		assert.equal(s.hits.length, hits, "a refused run still made requests");
+
+		// The override reaches the page — still a 403, still a block, and a
+		// second failure on the streak.
+		await assert.rejects(() => run({ ignoreCooldown: true }), BlockedError);
+		assert.equal(s.count("/page"), 2);
+		assert.equal(parseRecord(
+			readFileSync(createCooldownStore({ stateDir }).statePathFor(s.origin), "utf8"),
+		).failures, 2);
+
+		// A 2xx (reached with the override) resets the streak and the refusal.
+		pageResponse = respond(200);
+		assert.equal((await run({ ignoreCooldown: true })).status, 200);
+		assert.equal((await run()).status, 200);
+	} finally {
+		await s.close();
+	}
+});
+
+test("a 403 whose networkidle times out is recorded and not retried", browser, async () => {
+	const stateDir = freshDir();
+	const s = await serve({
+		"/robots.txt": ROBOTS,
+		"/page": respond(403, { "retry-after": "120" }, '<!doctype html><title>gone</title><p>Nothing here for you.</p><img src="/hang">'),
+		"/hang": () => {}, // never answers: networkidle never fires
+	});
+	try {
+		await assert.rejects(
+			() => render(`${s.origin}/page`, { stateDir, minIntervalMs: 0, timeout: 1500 }),
+			(err) => {
+				assert.ok(err instanceof CooldownError, err.stack);
+				assert.match(err.message, /networkidle-fallback retry was not sent/);
+				return true;
+			},
+		);
+	} finally {
+		await s.close();
+	}
+	assert.equal(s.count("/page"), 1, "the fallback retry went out anyway");
+	assert.equal(parseRecord(
+		readFileSync(createCooldownStore({ stateDir }).statePathFor(s.origin), "utf8"),
+	).failures, 1);
+});
+
+const CHALLENGE_PAGE = `<!doctype html>
+<title>Just a moment...</title>
+<form id="challenge-form" action="/cdn-cgi/l/challenge_js/3" method="POST">
+  <div id="cf-chl-widget-abc"></div>
+  <p>Checking if the site connection is secure</p>
+</form>
+<script src="/cdn-cgi/challenge-platform/h/b/orchestrate/jsch/v1"></script>`;
+
+test("a challenge page served with 200 is a block and records a cooldown", browser, async () => {
+	const stateDir = freshDir();
+	const s = await serve({ "/robots.txt": ROBOTS, "/page": CHALLENGE_PAGE });
+	const run = (extra = {}) => render(`${s.origin}/page`, { stateDir, minIntervalMs: 0, ...extra });
+	try {
+		await assert.rejects(() => run(), (err) => {
+			assert.ok(err instanceof BlockedError, err.stack);
+			assert.equal(err.status, 200);
+			assert.ok(err.reasons.some((r) => r.includes("Just a moment")), err.reasons);
+			assert.ok(err.reasons.some((r) => /challenge element/.test(r)), err.reasons);
+			return true;
+		});
+		// Recorded as a 403-equivalent block against the responding origin.
+		const rec = parseRecord(
+			readFileSync(createCooldownStore({ stateDir }).statePathFor(s.origin), "utf8"),
+		);
+		assert.equal(rec.failures, 1);
+		assert.equal(rec.status, 403);
+		assert.ok(rec.until > Date.now() + 50_000);
+
+		const hits = s.hits.length;
+		await assert.rejects(() => run(), (err) => err instanceof CooldownError && err.origin === s.origin);
+		assert.equal(s.hits.length, hits, "a refused run still made requests");
+	} finally {
+		await s.close();
+	}
+});
+
+// The negative fixture: an ordinary article *about* blocked access. It quotes
+// the challenge title in prose and mentions the markup, but no title match
+// plus challenge machinery — so it renders normally and records nothing.
+const ARTICLE_ABOUT_BLOCKING = `<!doctype html>
+<title>Why you see "Just a moment..." on some sites</title>
+<article>
+  <h1>Blocked access, explained</h1>
+  <p>${"When a site sits behind an anti-bot proxy, the first visit can land on an interstitial that says checking if the site connection is secure while a script runs in the background. ".repeat(6)}</p>
+  <p>Developers who inspect that page find a form with an id like challenge-form, a widget div whose id starts with cf-chl, and a script loaded from a cdn-cgi challenge-platform path. Real browsers clear it in a second or two; an article about it is just an article.</p>
+</article>`;
+
+test("an article about blocked access is not a challenge and records nothing", browser, async () => {
+	const stateDir = freshDir();
+	const s = await serve({ "/robots.txt": ROBOTS, "/page": ARTICLE_ABOUT_BLOCKING });
+	try {
+		const result = await render(`${s.origin}/page`, { stateDir, minIntervalMs: 0 });
+		assert.equal(result.status, 200);
+		assert.match(result.body, /Blocked access, explained/);
+	} finally {
+		await s.close();
+	}
+	assert.equal(existsSync(path.join(stateDir, "cooldown")), false);
+});
+
+test("a sign-in wall wearing challenge markers is still an auth wall", browser, async () => {
+	const stateDir = freshDir();
+	const s = await serve({
+		"/robots.txt": ROBOTS,
+		// Title and machinery match the challenge probe, but the auth-wall
+		// check runs first: a password field is a wall.
+		"/page":
+			'<!doctype html><title>Just a moment...</title><form id="challenge-form"><input type="password" name="pw"></form>',
+	});
+	try {
+		await assert.rejects(() => render(`${s.origin}/page`, { stateDir, minIntervalMs: 0 }), (err) => {
+			assert.ok(err instanceof AuthWallError, `expected AuthWallError, got ${err}`);
+			return true;
+		});
+	} finally {
+		await s.close();
+	}
+	// Auth-wall runs neither block nor record.
+	assert.equal(existsSync(path.join(stateDir, "cooldown")), false);
+});
+
+test("a 200 page with a 403 subresource and an iframe 403 records nothing", browser, async () => {
+	const stateDir = freshDir();
+	const s = await serve({
+		"/robots.txt": ROBOTS,
+		"/page": '<!doctype html><title>ok</title><h1>Fine page with plenty of words in it.</h1><img src="/denied.png"><iframe src="/frame"></iframe>',
+		"/denied.png": respond(403),
+		"/frame": respond(403),
+	});
+	try {
+		const result = await render(`${s.origin}/page`, { stateDir, minIntervalMs: 0 });
+		assert.equal(result.status, 200);
+		assert.ok(s.count("/frame") >= 1);
+		assert.ok(s.count("/denied.png") >= 1);
+	} finally {
+		await s.close();
+	}
+	assert.equal(existsSync(path.join(stateDir, "cooldown")), false);
+});
+
+test("a 403 robots.txt still allows the page and records no cooldown", browser, async () => {
+	const stateDir = freshDir();
+	const s = await serve({
+		"/robots.txt": respond(403),
+		"/page": '<!doctype html><title>ok</title><h1>Reached despite the robots 403.</h1>',
+	});
+	try {
+		const result = await render(`${s.origin}/page`, { stateDir, minIntervalMs: 0 });
+		assert.equal(result.status, 200);
+		assert.match(result.body, /Reached despite/);
+	} finally {
+		await s.close();
+	}
+	assert.equal(existsSync(path.join(stateDir, "cooldown")), false);
+});
+
 test("a redirect that ends in a 429 is recorded against the origin that sent it", browser, async () => {
 	const stateDir = freshDir();
 	const target = await serve({ "/robots.txt": ROBOTS, "/landing": respond(429, { "retry-after": "300" }) });
@@ -821,6 +1050,62 @@ test("the CLI exits 22 on a 503, then 4 with empty stdout until --ignore-cooldow
 		const forced = await runBin(link, [url, "--min-interval", "0", "--ignore-cooldown"], env);
 		assert.equal(forced.code, 22, forced.stderr);
 		assert.equal(s.count("/page"), 2);
+	} finally {
+		await s.close();
+		cleanup();
+	}
+});
+
+test("the CLI exits 22 with empty stdout on a 403, leaves -o intact, then 4", browser, async () => {
+	const TRAWL_STATE_DIR = freshDir();
+	const { link, cleanup } = binLink("trawl-cli-block-");
+	const s = await serve({ "/robots.txt": ROBOTS, "/page": respond(403, { "retry-after": "90" }) });
+	const out = path.join(freshDir(), "out.html");
+	writeFileSync(out, "PRE-EXISTING");
+	try {
+		const url = `${s.origin}/page`;
+		const env = { TRAWL_STATE_DIR };
+		const first = await runBin(link, [url, "--min-interval", "0", "-o", out], env);
+		assert.equal(first.code, 22, first.stderr);
+		assert.equal(first.stdout, "", "a blocked page reached stdout");
+		assert.match(first.stderr, /blocked/);
+		assert.equal(readFileSync(out, "utf8"), "PRE-EXISTING", "the -o file was overwritten");
+
+		const hits = s.hits.length;
+		const refused = await runBin(link, [url, "--min-interval", "0"], env);
+		assert.equal(refused.code, 4, refused.stderr);
+		assert.equal(refused.stdout, "");
+		assert.match(refused.stderr, /cooling down after HTTP 403/);
+		assert.equal(s.hits.length, hits, "a refused run still made requests");
+	} finally {
+		await s.close();
+		cleanup();
+	}
+});
+
+test("the CLI exits 22 on a served-with-200 challenge page", browser, async () => {
+	const TRAWL_STATE_DIR = freshDir();
+	const { link, cleanup } = binLink("trawl-cli-challenge-");
+	const s = await serve({ "/robots.txt": ROBOTS, "/page": CHALLENGE_PAGE });
+	try {
+		const first = await runBin(
+			link,
+			[`${s.origin}/page`, "--min-interval", "0"],
+			{ TRAWL_STATE_DIR },
+		);
+		assert.equal(first.code, 22, first.stderr);
+		assert.equal(first.stdout, "", "a challenge page reached stdout");
+		assert.match(first.stderr, /blocked/);
+		assert.match(first.stderr, /Just a moment/);
+
+		const hits = s.hits.length;
+		const refused = await runBin(
+			link,
+			[`${s.origin}/page`, "--min-interval", "0"],
+			{ TRAWL_STATE_DIR },
+		);
+		assert.equal(refused.code, 4, refused.stderr);
+		assert.equal(s.hits.length, hits);
 	} finally {
 		await s.close();
 		cleanup();
