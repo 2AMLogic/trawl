@@ -214,7 +214,7 @@ tries to load a different page — the same guard clicks use — is stopped
 before the request goes out and fails the run, so scrolling stays paced and
 makes no request of its own beyond the page itself. A selector that never
 matches within `--timeout` fails the run naming the step and selector
-(`scroll step 1 of 2 ("#more"): no element matched within 30000ms`).
+(`scroll step 1 of 2 ("#more"): no element matched, or it could not be scrolled into view, within 30000ms`).
 
 `--max-scrolls` caps how many steps a run may make, defaulting to 3; a
 longer listing raises it explicitly (`--max-scrolls 10`). A list longer than

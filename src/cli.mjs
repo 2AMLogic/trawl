@@ -329,7 +329,8 @@ function toNumber(value, flag) {
 
 // For counts (--max-scrolls): a whole number of steps, not a duration.
 function toCount(value, flag) {
-	const n = Number(value);
+	// Number("") and Number("  ") are 0: a blank cap must not pass as one.
+	const n = String(value).trim() === "" ? NaN : Number(value);
 	if (!Number.isInteger(n) || n < 0) {
 		throw new Error(`${flag} expects a non-negative integer, got "${value}"`);
 	}

@@ -162,7 +162,9 @@ function fakeBrowser({ failSelector = false, navigateOn = null } = {}) {
 		title: async () => "Fixture",
 		waitForTimeout: async (ms) => events.push(["settle", ms]),
 		goto: async () => ({ status: () => 200 }),
-		evaluate: async () => {
+		evaluate: async (fn) => {
+			// The post-scroll event flush is not a scroll step of its own.
+			if (String(fn).includes("requestAnimationFrame")) return undefined;
 			events.push(["evaluate", "bottom"]);
 			if (navigateOn === "bottom" && routeHandler) routeHandler(navRoute());
 			return undefined;
@@ -317,6 +319,23 @@ test("--max-scrolls rejects a non-integer or negative cap", async () => {
 	});
 });
 
+test("--max-scrolls rejects a blank cap before fetching", async () => {
+	const s = await serve();
+	try {
+		for (const argv of [
+			[s.url, "--max-scrolls="],
+			[s.url, "--max-scrolls", "   "],
+		]) {
+			const r = await runViaBin(argv, {}, "trawl-scroll-blank-");
+			assert.equal(r.code, 1);
+			assert.match(r.stderr, /non-negative integer/);
+		}
+		assert.equal(s.hits.length, 0, "no request was made");
+	} finally {
+		await s.close();
+	}
+});
+
 // --- preflight: rejected before any request ---------------------------------
 
 test("render() rejects an over-cap scroll list before any request", async () => {
@@ -463,7 +482,78 @@ test("a missing selector fails naming the step and selector", opts, async () => 
 				assert.equal(err.step, 1);
 				assert.equal(err.selector, "#nope");
 				assert.match(err.message, /scroll step 1 of 1 \("#nope"\)/);
-				assert.match(err.message, /no element matched within 1500ms/);
+				assert.match(err.message, /no element matched, or it could not be scrolled into view, within 1500ms/);
+				return true;
+			},
+		);
+	} finally {
+		await s.close();
+	}
+});
+
+test("consecutive bottom steps both load on a synchronous loader at the default settle", opts, async () => {
+	const SYNC = `<!doctype html>
+<title>Sync loader</title>
+<div id="rows"><p>batch 0</p></div>
+<script>
+  let batch = 0;
+  window.addEventListener("scroll", () => {
+    if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+      batch += 1;
+      const sec = document.createElement("p");
+      sec.style.height = "3000px";
+      sec.textContent = "batch " + batch;
+      document.getElementById("rows").appendChild(sec);
+    }
+  });
+  document.getElementById("rows").style.minHeight = "3000px";
+</script>`;
+	const s = await serve({ "/sync": SYNC });
+	try {
+		for (let run = 0; run < 5; run++) {
+			const r = await render(`${s.origin}/sync`, {
+				...fast,
+				scroll: ["bottom", "bottom"],
+				selector: "#rows",
+				format: "text",
+			});
+			assert.equal(r.scrollsPerformed, 2);
+			assert.match(r.body, /batch 2/);
+		}
+	} finally {
+		await s.close();
+	}
+});
+
+test("an invalid selector fails as a ScrollError naming the step, with the cause", opts, async () => {
+	const s = await serve();
+	try {
+		await assert.rejects(
+			render(s.url, { ...fast, timeout: 1500, scroll: ["bottom", "#bad["] }),
+			(err) => {
+				assert.ok(err instanceof ScrollError);
+				assert.equal(err.step, 2);
+				assert.equal(err.selector, "#bad[");
+				assert.match(err.message, /scroll step 2 of 2 \("#bad\["\)/);
+				assert.ok(err.cause instanceof Error);
+				return true;
+			},
+		);
+	} finally {
+		await s.close();
+	}
+});
+
+test("a hidden matching element times out with a message that fits it", opts, async () => {
+	const s = await serve({
+		"/hidden": `<!doctype html><title>h</title><div id="hidden" style="display:none">x</div>`,
+	});
+	try {
+		await assert.rejects(
+			render(`${s.origin}/hidden`, { ...fast, timeout: 500, scroll: ["#hidden"] }),
+			(err) => {
+				assert.ok(err instanceof ScrollError);
+				assert.match(err.message, /could not be scrolled into view, within 500ms/);
 				return true;
 			},
 		);

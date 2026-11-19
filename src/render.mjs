@@ -154,8 +154,8 @@ export class ClickError extends Error {
 // way ClickError's `step` counts click steps; `selector` carries the step's
 // target ("bottom" or the CSS selector as given).
 export class ScrollError extends Error {
-	constructor(message, { step, selector } = {}) {
-		super(message);
+	constructor(message, { step, selector, cause } = {}) {
+		super(message, cause ? { cause } : undefined);
 		this.name = "ScrollError";
 		this.step = step;
 		this.selector = selector;
@@ -375,6 +375,19 @@ async function runClickSteps(page, guard, steps, { timeout, settle }) {
 	guard.checkNavigation();
 }
 
+// Resolves after two animation frames (scroll events are dispatched before
+// the first), or after a short cap where frames are throttled.
+const SCROLL_FLUSH = () =>
+	new Promise((resolve) => {
+		const cap = setTimeout(resolve, 250);
+		requestAnimationFrame(() =>
+			requestAnimationFrame(() => {
+				clearTimeout(cap);
+				resolve();
+			}),
+		);
+	});
+
 // Scroll the loaded page step by step, each followed by the render settle
 // delay: a lazy loader appends more rows once it sees the page bottom, so
 // the next `bottom` step has to come after the appended rows have moved it.
@@ -403,13 +416,25 @@ async function runScrollSteps(page, guard, steps, stepOffset, { timeout, settle 
 					.first()
 					.scrollIntoViewIfNeeded({ timeout });
 			}
+			// Let the browser deliver the scroll event before the settle
+			// delay: a synchronous loader appends rows in that handler, and
+			// the next step must aim at the bottom those rows made.
+			await page.evaluate(SCROLL_FLUSH);
 		} catch (err) {
-			if (!isTimeout(err)) throw err;
+			if (!isTimeout(err)) {
+				// A selector Playwright cannot parse, or a page that went
+				// away: still names the step and target, cause preserved.
+				throw new ScrollError(`${label}: ${err.message.split("\n")[0]}`, {
+					step: index,
+					selector: target,
+					cause: err,
+				});
+			}
 			throw new ScrollError(
 				target === "bottom"
 					? `${label}: the page did not scroll within ${ms}`
-					: `${label}: no element matched within ${ms}`,
-				{ step: index, selector: target },
+					: `${label}: no element matched, or it could not be scrolled into view, within ${ms}`,
+				{ step: index, selector: target, cause: err },
 			);
 		}
 		guard.checkNavigation();
