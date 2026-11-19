@@ -5,10 +5,13 @@ pace on a user's instruction is the same act as that user opening it in a
 browser. `robots.txt` is advisory by default (`--respect-robots`, library
 `respectRobots: true`, MCP `respect_robots` is the opt-in strict mode;
 `--ignore-robots` is a no-op), and no change may make a single paced read fail
-because of it. Abuse is limited by rate and volume: the per-origin pace, the
-per-origin budget, back-off on 429/503 and block pages, and the absence of any
-crawl mode. A proposal to add a new refusal on the fetch path needs an
-operator decision, recorded in an issue, before it is built. See
+because of it. Abuse is limited by rate and volume: the per-origin pace,
+cooldowns on 429/503, and the absence of any crawl mode. A shared per-origin
+page budget and a block-page backoff are planned, not built — see
+[#141](https://github.com/2AMLogic/trawl/issues/141) and
+[#142](https://github.com/2AMLogic/trawl/issues/142). A proposal to add a new
+refusal on the fetch path needs an operator decision, recorded in an issue,
+before it is built. See
 [#140](https://github.com/2AMLogic/trawl/issues/140); the named test
 "default flags fetch a page on a Disallow: / origin" in `tests/render.test.mjs`
 fails if the refusal comes back.

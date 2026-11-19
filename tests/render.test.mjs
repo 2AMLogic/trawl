@@ -786,29 +786,49 @@ test("by default an unreachable robots.txt does not refuse the page", async () =
 	}
 });
 
-test("by default a robots.txt timeout and a connection failure do not refuse the page", async () => {
+test("by default a robots.txt timeout and a connection failure do not refuse the page", opts, async () => {
+	// A real server per case, through navigation (#143): its robots route
+	// hangs or resets the socket while the page route stays healthy. The
+	// hanging server costs one ROBOTS_TIMEOUT_MS budget per mode — the
+	// checker's own timer is what aborts the request, so the timeout branch
+	// at src/robots.mjs is exercised for real (a stub that throws without an
+	// aborted signal comes back as a network-error instead). The checker
+	// tests at tests/robots.test.mjs cover the lower-level verdicts.
+
+	// The robots route never answers; the 10s budget aborts the fetch.
 	const hang = await serveRobots(() => {
-		// Never answer: the 10s robots budget is bounded, so use a stub fetch.
+		// Deliberately no response.
 	});
-	await hang.close();
-	// A fetch that times out the way an aborted request does.
-	const timingOut = async () => {
-		const err = new Error("aborted");
-		err.name = "AbortError";
-		throw err;
-	};
-	await assert.rejects(
-		() => render("http://127.0.0.1:9/page", { ...NO_BROWSER, fetch: timingOut }),
-		/Chromium binary not found/,
-	);
-	// A dead port: connection refused.
-	const dead = await serveRobots(status(200));
-	const { origin } = dead;
-	await dead.close();
-	await assert.rejects(
-		() => render(`${origin}/page`, NO_BROWSER),
-		/Chromium binary not found/,
-	);
+	try {
+		const { body } = await render(`${hang.origin}/page`);
+		assert.match(body, /reached the page/);
+		assert.equal(hang.hits.page, 1, "the advisory read navigates after the timeout");
+		await assert.rejects(
+			() => render(`${hang.origin}/page`, { respectRobots: true }),
+			/robots\.txt is unreachable: .*timed out after \d+ms\. .*Refused because strict robots mode is on/,
+		);
+		assert.equal(hang.hits.page, 1, "strict mode refused before any page navigation");
+	} finally {
+		await hang.close();
+	}
+
+	// The robots route resets the socket; the page route answers.
+	const reset = await serveRobots((_req, res) => {
+		if (typeof res.socket.resetAndDestroy === "function") res.socket.resetAndDestroy();
+		else res.socket.destroy();
+	});
+	try {
+		const { body } = await render(`${reset.origin}/page`);
+		assert.match(body, /reached the page/);
+		assert.equal(reset.hits.page, 1, "a connection failure does not stop the advisory read");
+		await assert.rejects(
+			() => render(`${reset.origin}/page`, { respectRobots: true }),
+			/robots\.txt is unreachable: .*could not be fetched \(network error: .+\)\. .*Refused because strict robots mode is on/,
+		);
+		assert.equal(reset.hits.page, 1, "strict mode refused before any page navigation");
+	} finally {
+		await reset.close();
+	}
 });
 
 test("never fetches robots.txt for a file:// URL", async () => {

@@ -450,8 +450,9 @@ exact host, a `.example.com` cookie for that domain and its subdomains, a
 path of `/` or `/robots.txt`, a `Secure` cookie only over `https`, nothing
 expired. If none match, the request has no `Cookie` header at all. A redirect
 to another origin (another host or port, or `http` to `https`) does not carry
-the header along, so a cookie-gated `robots.txt` reached that way is refused,
-and the error says the cookies did not follow the redirect; a redirect within
+the header along, so a cookie-gated `robots.txt` reached that way is refused
+in strict mode, with an error that says the cookies did not follow the
+redirect; a redirect within
 the same origin does carry it, so a cookie scoped to `/robots.txt` can reach
 another path on that host if `robots.txt` redirects there. A `Set-Cookie` on
 the `robots.txt` response is ignored. A `--profile` fetch's `robots.txt`
@@ -617,12 +618,13 @@ any CLI runs through the same state directory (`$TRAWL_STATE_DIR`).
 ## Status
 
 Early but usable: `trawl` renders client-side pages to text, HTML, links,
-title or Markdown, captures HAR traffic and screenshots, and enforces
-`robots.txt`. It detects auth walls, drives pages with click steps, paces
-requests across runs, and backs off politely on 429/503. Browser profiles
-(`trawl login`, `--profile`) carry authenticated sessions across runs, and
-cookies can be imported from a captured HAR for replay, with opt-in redaction
-of the HAR itself. See [CHANGELOG.md](CHANGELOG.md) for what has shipped and
+title or Markdown, captures HAR traffic and screenshots, and consults
+`robots.txt` — advisory by default; a read is refused for it only in strict
+`--respect-robots` mode. It detects auth walls, drives pages with click
+steps, paces requests across runs, and backs off politely on 429/503.
+Browser profiles (`trawl login`, `--profile`) carry authenticated sessions
+across runs, and cookies can be imported from a captured HAR for replay,
+with opt-in redaction of the HAR itself. See [CHANGELOG.md](CHANGELOG.md) for what has shipped and
 [ROADMAP.md](ROADMAP.md) for what's next; the
 [issues](https://github.com/rjwalters/trawl/issues) are the day-to-day
 tracker.
