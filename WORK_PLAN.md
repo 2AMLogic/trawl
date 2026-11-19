@@ -4,7 +4,7 @@ Roadmap generated from current GitHub label state by the Loom Guide role.
 The region between the markers is machine-generated and overwritten wholesale.
 
 <!-- guide:plan-body:start -->
-_Generated: 2026-11-19T07:40:31Z (snapshot; compare against live labels)_
+_Generated: 2026-11-19T18:55:00Z (snapshot; compare against live labels)_
 ## Operator Attention: Merge-Risk-Hold Pileup
 
 Judge-approved PRs under a hold (`loom:blocked` or `loom:operator`) — only a human merge decision is missing.
@@ -33,29 +33,25 @@ _None._
 
 Issues currently being built (`loom:building`).
 
-- **#153**: Scroll-step polish: MCP result metadata field, unreachable bottom-timeout message, implicit scrollsPerformed invariant
-- **#154**: Scroll seam tests fail instead of skipping on a Chromium-less host
-- **#156**: CLAUDE.md still says the per-origin page budget is "planned, not built"
+- **#164**: Exempt loopback origins from the page budget and default pacing
 
 ## PRs Awaiting Review
 
 PRs waiting on Judge (`loom:review-requested`).
 
-- **#157**: test: give scroll seam tests an existing executablePath so they run without Chromium
+_None._
 
 ## Approved (Awaiting Merge)
 
 PRs that passed review and are queued for Champion auto-merge (`loom:pr`).
 
-- **#155**: Move MCP scroll count into _meta; drop dead bottom-timeout wording; name message-less step failures — closes #153
+_None._
 
 ## Proposed
 
 Issues carrying `loom:curated`.
 
-- **#153**: Scroll-step polish: MCP result metadata field, unreachable bottom-timeout message, implicit scrollsPerformed invariant *(curated)*
-- **#154**: Scroll seam tests fail instead of skipping on a Chromium-less host *(curated)*
-- **#156**: CLAUDE.md still says the per-origin page budget is "planned, not built" *(curated)*
+- **#164**: Exempt loopback origins from the page budget and default pacing *(curated)*
 
 ## Proposed (Architect / Hermit)
 
@@ -73,10 +69,10 @@ _None._
 | Very important | 0 |
 | Important | 0 |
 | Ready (`loom:issue`, net of holds/building/merge-pending) | 0 |
-| In Progress (`loom:building`) | 3 |
-| PRs awaiting review | 1 |
-| Approved PRs awaiting merge | 1 |
-| Curated | 3 |
+| In Progress (`loom:building`) | 1 |
+| PRs awaiting review | 0 |
+| Approved PRs awaiting merge | 0 |
+| Curated | 1 |
 | Architect / Hermit proposals | 0 |
 | Active epics | 0 |
 <!-- guide:plan-body:end -->
