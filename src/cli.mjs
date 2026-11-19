@@ -127,7 +127,9 @@ Options:
       --min-interval <ms>  Minimum gap between requests to one origin,
                             across separate runs; Crawl-delay still wins if
                             larger. 0 drops the floor only. Max ${MAX_MIN_INTERVAL_MS}.
-                             (default: ${DEFAULT_MIN_INTERVAL_MS}, plus 0-500ms jitter)
+                             (default: ${DEFAULT_MIN_INTERVAL_MS}, plus 0-500ms jitter;
+                             loopback origins — localhost, 127.x, [::1] —
+                             default to 0 with no jitter)
       --no-pacing          Don't pace requests across runs (Crawl-delay is
                             still honored within a run). Pacing state lives
                             in $TRAWL_STATE_DIR, else
@@ -140,8 +142,10 @@ Options:
                             budget — 60 per rolling hour, 200 per rolling
                             day, shared by every trawl entry point through
                             the same state directory (see exit code 5).
-                            Bypasses the refusal only: the attempt is still
-                            counted, and cooldowns and pacing still apply.
+                            Loopback origins (localhost, 127.x, [::1]) are
+                            exempt: never counted, never refused. Bypasses
+                            the refusal only: the attempt is still counted,
+                            and cooldowns and pacing still apply.
       --profile <dir>      Persistent browser profile dir (cookies/
                             localStorage survive across runs); also read from
                             $TRAWL_PROFILE_DIR. Populate one with "trawl login"

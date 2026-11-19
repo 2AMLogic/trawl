@@ -1285,6 +1285,9 @@ test("robots.txt fetches from separate render() calls are paced on the minimum i
 	const s = await serve({ "/robots.txt": "User-agent: *\nAllow: /\n" }, { stateDir: pacingStateDir });
 	try {
 		for (let i = 0; i < 2; i++) {
+			// The fixture origin is loopback, so this doubles as the proof
+			// that an explicit minIntervalMs still paces a loopback render
+			// exactly as given (#164).
 			await assert.rejects(
 				() => render(`${s.origin}/page`, { ...NO_BROWSER, pacingStateDir, minIntervalMs: 700 }),
 				/Chromium binary not found/,
@@ -1295,6 +1298,35 @@ test("robots.txt fetches from separate render() calls are paced on the minimum i
 	}
 	assert.equal(s.hits.length, 2);
 	assertSpaced(s.hits, 700);
+	assert.equal(readdirSync(path.join(pacingStateDir, "pacing")).length, 1);
+});
+
+test("a loopback render with no minIntervalMs waits on no default floor", async () => {
+	const pacingStateDir = freshStateDir();
+	const s = await serve({ "/robots.txt": "User-agent: *\nAllow: /\n" }, { stateDir: pacingStateDir });
+	try {
+		for (let i = 0; i < 2; i++) {
+			// Omitted minIntervalMs: before #164 the second call would sit on
+			// the 3000 ms default floor (plus jitter) before its robots.txt
+			// request; the loopback default is 0, so both start immediately.
+			await assert.rejects(
+				() => render(`${s.origin}/page`, { ...NO_BROWSER, pacingStateDir }),
+				/Chromium binary not found/,
+			);
+		}
+	} finally {
+		await s.close();
+	}
+	const robots = s.hits.filter((h) => h.path === "/robots.txt");
+	assert.equal(robots.length, 2);
+	const gap = robots[1].recorded - robots[0].recorded;
+	assert.ok(
+		gap < 2500,
+		`second robots.txt request started ${gap}ms after the first; a loopback ` +
+			"origin must not wait on the 3000ms default floor (#164)",
+	);
+	// The pacer itself stays in place for loopback origins — a Crawl-delay
+	// must still gate the navigation (the tests below prove it does).
 	assert.equal(readdirSync(path.join(pacingStateDir, "pacing")).length, 1);
 });
 
@@ -1319,12 +1351,17 @@ test("pacing: false neither waits across calls nor writes pacing state", async (
 	}
 	assert.equal(s.hits.length, 2);
 	assert.ok(s.hits[1].at - s.hits[0].at < 5000, "pacing: false still waited");
-	// Pacing wrote nothing, but the page budget is not disabled by it: the
-	// two admitted attempts were still counted (src/budget.mjs).
-	assert.deepEqual(readdirSync(pacingStateDir), ["budget"]);
+	// Pacing wrote nothing — and neither did the budget: this fixture origin
+	// is loopback, which is budget-exempt by design (#164). The "no override
+	// disables the budget" property is proven on a non-loopback origin in
+	// tests/budget.test.mjs.
+	assert.deepEqual(readdirSync(pacingStateDir), []);
 });
 
 test("Crawl-delay paces robots and page requests across two render() calls", opts, async () => {
+	// The fixture origin is loopback with minIntervalMs 0 — the post-#164
+	// defaults for a loopback render — so every gap below comes from
+	// Crawl-delay alone, proving a loopback navigation is still gated by it.
 	const pacingStateDir = freshStateDir();
 	const s = await serve({
 		"/robots.txt": "User-agent: *\nCrawl-delay: 0.8\n",
@@ -1423,9 +1460,10 @@ test("an unwritable state dir warns on stderr and still renders", opts, async ()
 	const parent = freshStateDir();
 	const notADir = path.join(parent, "occupied");
 	writeFileSync(notADir, "a file, not a directory");
-	// Only the *pacing* state is broken: the budget (src/budget.mjs) refuses
-	// rather than render when its own state cannot be recorded, so it keeps
-	// its usable stateDir while pacing degrades to in-run here.
+	// Only the *pacing* state is broken: cooldowns (still enforced on
+	// loopback origins) keep their usable stateDir while pacing degrades to
+	// in-run here — the budget would too, but this fixture origin is
+	// loopback and therefore budget-exempt (#164).
 	const usableStateDir = freshStateDir();
 	try {
 		const { result, stderr } = await captureStderr(() =>

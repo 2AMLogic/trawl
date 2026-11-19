@@ -14,7 +14,15 @@ entry points through the same state directory. Past either limit a call is
 refused before any request is made, with exit code 5, until a slot rolls
 free; `--ignore-budget` (library `ignoreBudget: true`) skips the refusal
 only. See [#141](https://github.com/2AMLogic/trawl/issues/141), which built
-it. A proposal to add a new refusal on the fetch path needs an operator
+it. Loopback origins — `localhost`, any `127.0.0.0/8` literal, `[::1]`,
+matched literally with no DNS lookup — are exempt from the page budget and
+the default pacing floor ([#164](https://github.com/2AMLogic/trawl/issues/164),
+operator ruling in a comment there): the limits protect third-party sites,
+and a loopback server is the caller's own. A loopback render neither reserves
+nor records a budget slot, and its omitted `--min-interval` means 0 ms with
+no jitter; an explicit `--min-interval` and any `Crawl-delay` still apply,
+and cooldowns are unchanged. A proposal to add a new refusal on the fetch
+path needs an operator
 decision, recorded in an issue, before it ships. See
 [#140](https://github.com/2AMLogic/trawl/issues/140); the named test
 "default flags fetch a page on a Disallow: / origin" in `tests/render.test.mjs`

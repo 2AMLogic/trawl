@@ -33,7 +33,7 @@ import {
 import { BudgetError as RenderedBudgetError, render } from "../src/render.mjs";
 import { callTool } from "../src/mcp.mjs";
 import { originDigest } from "../src/state.mjs";
-import { binLink, runBin, serve } from "./helpers.mjs";
+import { binLink, runBin } from "./helpers.mjs";
 
 // render() defaults to $TRAWL_STATE_DIR; never let it fall through to the
 // user's real cache.
@@ -483,7 +483,10 @@ test("render() re-exports the budget errors", () => {
 
 test("an over-budget origin is refused before robots.txt or browser resolution", async () => {
 	const stateDir = freshDir();
-	const origin = "http://127.0.0.1:9";
+	// Non-loopback on purpose: loopback origins are budget-exempt (#164),
+	// so the refusal itself is only reachable from an origin the budget
+	// governs. `fetch` is injected, so nothing leaves the process.
+	const origin = ORIGIN;
 	const s = store(stateDir, { now: Date.now });
 	seed(
 		s,
@@ -512,13 +515,14 @@ test("an over-budget origin is refused before robots.txt or browser resolution",
 
 test("unavailable budget state also refuses before any request", async () => {
 	const stateDir = freshDir();
+	const origin = ORIGIN;
 	const s = store(stateDir, { now: Date.now });
 	mkdirSync(path.join(stateDir, "budget"), { recursive: true });
-	writeFileSync(s.statePathFor("http://127.0.0.1:9"), "{not json");
+	writeFileSync(s.statePathFor(origin), "{not json");
 	let fetched = 0;
 	await assert.rejects(
 		() =>
-			render("http://127.0.0.1:9/page", {
+			render(`${origin}/page`, {
 				...NO_BROWSER,
 				stateDir,
 				fetch: async () => {
@@ -533,7 +537,7 @@ test("unavailable budget state also refuses before any request", async () => {
 
 test("ignoreBudget gets past admission and still records the attempt", async () => {
 	const stateDir = freshDir();
-	const origin = "http://127.0.0.1:9";
+	const origin = ORIGIN;
 	const s = store(stateDir, { now: Date.now });
 	seed(
 		s,
@@ -563,7 +567,7 @@ test("ignoreBudget gets past admission and still records the attempt", async () 
 
 test("no pacing or cooldown override disables the budget", async () => {
 	const stateDir = freshDir();
-	const origin = "http://127.0.0.1:9";
+	const origin = ORIGIN;
 	const s = store(stateDir, { now: Date.now });
 	seed(
 		s,
@@ -598,7 +602,7 @@ test("a file: URL never touches the budget state", async () => {
 
 test("an admitted render() consumes exactly one slot for all of its requests", async () => {
 	const stateDir = freshDir();
-	const origin = "http://127.0.0.1:9";
+	const origin = ORIGIN;
 	const s = store(stateDir, { now: Date.now });
 	await assert.rejects(
 		() =>
@@ -614,6 +618,86 @@ test("an admitted render() consumes exactly one slot for all of its requests", a
 	assert.deepEqual(readAttempts(s, origin).length, 1);
 });
 
+// --- loopback exemption (#164) ---
+// The budget protects third-party sites; loopback origins are the caller's
+// own machine, so render() skips the store for them entirely — never
+// refused, never counted, no state written.
+
+test("a spent loopback budget neither refuses the render nor records an attempt", async () => {
+	const stateDir = freshDir();
+	const origin = "http://127.0.0.1:9";
+	const s = store(stateDir, { now: Date.now });
+	seed(
+		s,
+		origin,
+		Array.from({ length: HOURLY_BUDGET }, (_, i) => 1000 * i),
+		Date.now(),
+	);
+	let fetched = 0;
+	await assert.rejects(
+		() =>
+			render(`${origin}/page`, {
+				...NO_BROWSER,
+				stateDir,
+				fetch: async () => {
+					fetched++;
+					return new Response(ROBOTS);
+				},
+			}),
+		/Chromium binary not found/,
+	);
+	assert.equal(fetched, 1, "a spent loopback budget refused the render");
+	// Not counted either: the seeded hour is still exactly what it was.
+	assert.equal(readAttempts(s, origin).length, HOURLY_BUDGET);
+});
+
+test("a loopback render writes no budget state at all", async () => {
+	const stateDir = freshDir();
+	let fetched = 0;
+	await assert.rejects(
+		() =>
+			render("http://localhost:8/page", {
+				...NO_BROWSER,
+				stateDir,
+				fetch: async () => {
+					fetched++;
+					return new Response(ROBOTS);
+				},
+			}),
+		/Chromium binary not found/,
+	);
+	assert.equal(fetched, 1);
+	// The pacer still keeps its state (a Crawl-delay must keep gating a
+	// loopback navigation), but no budget store ever materialises.
+	assert.deepEqual(readdirSync(stateDir), ["pacing"]);
+});
+
+test("61 loopback renders in an hour all admit", async () => {
+	const stateDir = freshDir();
+	const origin = "http://127.0.0.1:9";
+	const fetch = async () => new Response(ROBOTS);
+	// No minIntervalMs: the loopback default floor is 0 (#164), so this loop
+	// runs in moments instead of 61 × ~3 s — which is itself the pacing half
+	// of the exemption, asserted directly in tests/render.test.mjs.
+	for (let i = 0; i < HOURLY_BUDGET + 1; i++) {
+		await assert.rejects(
+			() => render(`${origin}/page`, { ...NO_BROWSER, stateDir, fetch }),
+			(err) => {
+				assert.match(
+					err.message,
+					/Chromium binary not found/,
+					`render ${i + 1} never reached browser resolution (message: ${err.message})`,
+				);
+				return true;
+			},
+		);
+	}
+	assert.ok(
+		!readdirSync(stateDir).includes("budget"),
+		"a loopback render wrote budget state",
+	);
+});
+
 // --- CLI and MCP wiring ---
 
 test("--ignore-budget parses as a boolean flag", () => {
@@ -623,106 +707,103 @@ test("--ignore-budget parses as a boolean flag", () => {
 
 test("the CLI refuses an over-budget origin with exit code 5", async () => {
 	const TRAWL_STATE_DIR = freshDir();
-	const s = await serve({ "/robots.txt": ROBOTS });
+	// Non-loopback on purpose (loopback origins are exempt, #164): the
+	// refusal is only reachable from an origin the budget governs. It fires
+	// before any request, so the origin never has to be reachable either —
+	// .test never resolves and no fetch is made at all.
+	const origin = ORIGIN;
+	const budgetStore = createBudgetStore({ stateDir: TRAWL_STATE_DIR });
+	mkdirSync(budgetStore.dir, { recursive: true });
+	writeFileSync(
+		budgetStore.statePathFor(origin),
+		JSON.stringify({
+			version: 1,
+			attempts: Array.from({ length: HOURLY_BUDGET }, (_, i) => Date.now() - 1000 * i).sort(
+				(a, b) => a - b,
+			),
+		}),
+	);
+	const { link, cleanup } = binLink();
 	try {
-		const origin = s.origin;
-		const budgetStore = createBudgetStore({ stateDir: TRAWL_STATE_DIR });
-		mkdirSync(budgetStore.dir, { recursive: true });
-		writeFileSync(
-			budgetStore.statePathFor(origin),
-			JSON.stringify({
-				version: 1,
-				attempts: Array.from({ length: HOURLY_BUDGET }, (_, i) => Date.now() - 1000 * i).sort(
-					(a, b) => a - b,
-				),
-			}),
+		const { code, stderr } = await runBin(
+			link,
+			[`${origin}/page`, "--executable-path", path.join(tmpdir(), "trawl-no-such-chrome")],
+			{ TRAWL_STATE_DIR },
 		);
-		const { link, cleanup } = binLink();
-		try {
-			const { code, stderr } = await runBin(
-				link,
-				[`${origin}/page`, "--executable-path", path.join(tmpdir(), "trawl-no-such-chrome")],
-				{ TRAWL_STATE_DIR },
-			);
-			assert.equal(code, 5);
-			assert.match(stderr, /used its hourly budget/);
-			assert.equal(s.hits.length, 0, "robots.txt was fetched despite the refusal");
-		} finally {
-			cleanup();
-		}
+		assert.equal(code, 5);
+		assert.match(stderr, /used its hourly budget/);
 	} finally {
-		await s.close();
+		cleanup();
 	}
 });
 
 test("--ignore-budget still counts and renders (exit 1 at browser resolution)", async () => {
 	const TRAWL_STATE_DIR = freshDir();
-	const s = await serve({ "/robots.txt": ROBOTS });
+	// Non-loopback on purpose (loopback origins are exempt, #164). .test
+	// never resolves — fine here: an unreachable robots.txt is "no policy"
+	// in the default advisory mode, so the run proceeds to browser
+	// resolution, which is the step the exit-1 assertion pins.
+	const origin = ORIGIN;
+	const budgetStore = createBudgetStore({ stateDir: TRAWL_STATE_DIR });
+	mkdirSync(budgetStore.dir, { recursive: true });
+	writeFileSync(
+		budgetStore.statePathFor(origin),
+		JSON.stringify({
+			version: 1,
+			attempts: Array.from({ length: HOURLY_BUDGET }, (_, i) => Date.now() - 1000 * i).sort(
+				(a, b) => a - b,
+			),
+		}),
+	);
+	const { link, cleanup } = binLink();
 	try {
-		const origin = s.origin;
-		const budgetStore = createBudgetStore({ stateDir: TRAWL_STATE_DIR });
-		mkdirSync(budgetStore.dir, { recursive: true });
-		writeFileSync(
-			budgetStore.statePathFor(origin),
-			JSON.stringify({
-				version: 1,
-				attempts: Array.from({ length: HOURLY_BUDGET }, (_, i) => Date.now() - 1000 * i).sort(
-					(a, b) => a - b,
-				),
-			}),
+		const { code, stderr } = await runBin(
+			link,
+			[
+				`${origin}/page`,
+				"--ignore-budget",
+				"--executable-path",
+				path.join(tmpdir(), "trawl-no-such-chrome"),
+			],
+			{ TRAWL_STATE_DIR },
 		);
-		const { link, cleanup } = binLink();
-		try {
-			const { code, stderr } = await runBin(
-				link,
-				[
-					`${origin}/page`,
-					"--ignore-budget",
-					"--executable-path",
-					path.join(tmpdir(), "trawl-no-such-chrome"),
-				],
-				{ TRAWL_STATE_DIR },
-			);
-			assert.equal(code, 1);
-			assert.match(stderr, /Chromium binary not found/);
-			const attempts = parseRecord(
-				readFileSync(budgetStore.statePathFor(origin), "utf8"),
-			).attempts;
-			assert.equal(attempts.length, HOURLY_BUDGET + 1);
-		} finally {
-			cleanup();
-		}
+		assert.equal(code, 1);
+		assert.match(stderr, /Chromium binary not found/);
+		const attempts = parseRecord(
+			readFileSync(budgetStore.statePathFor(origin), "utf8"),
+		).attempts;
+		assert.equal(attempts.length, HOURLY_BUDGET + 1);
 	} finally {
-		await s.close();
+		cleanup();
 	}
 });
 
 test("unavailable budget state is exit 1, not the budget code", async () => {
 	const TRAWL_STATE_DIR = freshDir();
-	const s = await serve({ "/robots.txt": ROBOTS });
+	// Non-loopback on purpose (loopback origins are exempt, #164); the
+	// refusal fires before any request, so the origin never has to resolve.
+	const origin = ORIGIN;
+	const budgetStore = createBudgetStore({ stateDir: TRAWL_STATE_DIR });
+	mkdirSync(budgetStore.dir, { recursive: true });
+	writeFileSync(budgetStore.statePathFor(origin), "{not json");
+	const { link, cleanup } = binLink();
 	try {
-		const budgetStore = createBudgetStore({ stateDir: TRAWL_STATE_DIR });
-		mkdirSync(budgetStore.dir, { recursive: true });
-		writeFileSync(budgetStore.statePathFor(s.origin), "{not json");
-		const { link, cleanup } = binLink();
-		try {
-			const { code, stderr } = await runBin(
-				link,
-				[`${s.origin}/page`, "--executable-path", path.join(tmpdir(), "trawl-no-such-chrome")],
-				{ TRAWL_STATE_DIR },
-			);
-			assert.equal(code, 1);
-			assert.match(stderr, /could not be recorded/);
-		} finally {
-			cleanup();
-		}
+		const { code, stderr } = await runBin(
+			link,
+			[`${origin}/page`, "--executable-path", path.join(tmpdir(), "trawl-no-such-chrome")],
+			{ TRAWL_STATE_DIR },
+		);
+		assert.equal(code, 1);
+		assert.match(stderr, /could not be recorded/);
 	} finally {
-		await s.close();
+		cleanup();
 	}
 });
 
 test("MCP reports a budget refusal as a tool error", async () => {
-	const origin = "http://127.0.0.1:9";
+	// Non-loopback on purpose (loopback origins are exempt, #164); the
+	// refusal fires before any request, so nothing needs to resolve.
+	const origin = ORIGIN;
 	const s = createBudgetStore({ stateDir: process.env.TRAWL_STATE_DIR });
 	mkdirSync(s.dir, { recursive: true });
 	writeFileSync(

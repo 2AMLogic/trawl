@@ -5,6 +5,22 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Loopback origins are exempt from the page budget and the default pacing
+  floor (#164).** The budget and the 3,000 ms default floor protect
+  third-party sites; a loopback origin — `localhost`, any `127.0.0.0/8`
+  literal, `[::1]`, matched literally with no DNS lookup — is the caller's
+  own machine. A render of one neither reserves nor records a budget slot
+  (the 61st in an hour succeeds; no `--ignore-budget` needed for a dev
+  server) and, with no explicit `--min-interval`, uses a 0 ms floor with no
+  jitter instead of waiting ~3–3.5 s. An explicit `--min-interval`
+  (library `minIntervalMs`) and any `Crawl-delay` still apply, cooldowns are
+  unchanged, and non-loopback origins are unaffected. Applies to the CLI,
+  library and MCP entry points alike.
+
 ## [0.5.0] - 2026-11-19
 
 trawl now limits load by rate and volume instead of by `robots.txt`: reads
