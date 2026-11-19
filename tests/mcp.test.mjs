@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
 import { BlockedError } from "../src/render.mjs";
 import {
 	DEFAULT_MAX_CHARS,
@@ -458,7 +459,7 @@ test("a rejected scroll control is a tool error and never reaches render", async
 	]);
 });
 
-test("reports scrollsPerformed alongside the text, for both tools", async () => {
+test("reports scrollsPerformed in _meta alongside the text, for both tools", async () => {
 	const calls = [];
 	const render = async (url, options) => {
 		calls.push({ url, options });
@@ -472,7 +473,7 @@ test("reports scrollsPerformed alongside the text, for both tools", async () => 
 	assert.equal(page.isError, undefined);
 	assert.equal(text(page), "extracted");
 	assert.equal(page.content.length, 1, "the count never enters the text");
-	assert.equal(page.scrollsPerformed, 2);
+	assert.equal(page._meta.scrollsPerformed, 2);
 
 	const links = await callTool(
 		"fetch_links",
@@ -480,8 +481,14 @@ test("reports scrollsPerformed alongside the text, for both tools", async () => 
 		{ render, env: {} },
 	);
 	assert.equal(text(links), "extracted");
-	assert.equal(links.scrollsPerformed, 2);
+	assert.equal(links._meta.scrollsPerformed, 2);
 	assert.equal(calls.length, 2);
+	// A client validating CallToolResult strictly accepts both results: the
+	// count lives in the spec's `_meta` extension point. As an undocumented
+	// top-level key it failed strict validation with `unrecognized_keys`,
+	// which rejects the whole tool call.
+	assert.doesNotThrow(() => CallToolResultSchema.strict().parse(page));
+	assert.doesNotThrow(() => CallToolResultSchema.strict().parse(links));
 });
 
 // --- truncation -------------------------------------------------------------

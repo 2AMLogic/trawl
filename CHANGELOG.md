@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `robots.txt` request. `CLAUDE.md` and `AGENTS.md` now record the design
   rule, and a named test asserts a `Disallow: /` origin is fetched by default.
 
+- **The MCP scroll count lives in `_meta` (#153).** `fetch_page` and
+  `fetch_links` return the number of scroll steps performed as
+  `_meta.scrollsPerformed` instead of a bare top-level `scrollsPerformed`
+  key: `CallToolResult` has no such field, and a client validating the
+  result strictly rejects the whole call over it (`unrecognized_keys`).
+  The library's `render()` result is unchanged (`scrollsPerformed`).
+
 ### Added
 
 - **Load controls on the MCP tools.** `fetch_page` and `fetch_links` now

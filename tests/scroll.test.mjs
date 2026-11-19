@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseArgs } from "../src/cli.mjs";
-import { BlockedError, ScrollError, render } from "../src/render.mjs";
+import { BlockedError, ScrollError, render, runScrollSteps } from "../src/render.mjs";
 import { callTool } from "../src/mcp.mjs";
 import {
 	browserOpts as opts,
@@ -491,6 +491,45 @@ test("a missing selector fails naming the step and selector", opts, async () => 
 	}
 });
 
+// runScrollSteps is exercised directly so a step can be made to fail with a
+// rejection that carries no `message` — a shape no Playwright call produces,
+// but one the error template must not crash on (it used to read
+// `err.message.split` bare, so the ScrollError never got built).
+test("a step that fails with a message-less value still rejects as a ScrollError naming the step", async () => {
+	const noMessage = { code: "E_CURSED" };
+	const fail = async () => {
+		throw noMessage;
+	};
+	const page = {
+		// Selector steps scroll through locator().first(); bottom steps
+		// through evaluate(). Either failure reaches the same template.
+		locator: () => ({ first: () => ({ scrollIntoViewIfNeeded: fail }) }),
+		evaluate: fail,
+		waitForTimeout: async () => {},
+	};
+	const guard = { begin() {}, checkNavigation() {} };
+
+	for (const target of ["#more", "bottom"]) {
+		await assert.rejects(
+			runScrollSteps(page, guard, [{ target, index: 2, count: 3 }], 0, {
+				timeout: 1500,
+				settle: 0,
+			}),
+			(err) => {
+				assert.ok(err instanceof ScrollError);
+				assert.equal(err.step, 2);
+				assert.equal(err.selector, target);
+				assert.match(
+					err.message,
+					new RegExp(`scroll step 2 of 3 \\("${target}"\\)`),
+				);
+				assert.equal(err.cause, noMessage);
+				return true;
+			},
+		);
+	}
+});
+
 test("consecutive bottom steps both load on a synchronous loader at the default settle", opts, async () => {
 	const SYNC = `<!doctype html>
 <title>Sync loader</title>
@@ -602,7 +641,7 @@ test("callTool scrolls through a real render and reports the count", opts, async
 		assert.doesNotMatch(result.content[0].text, /\/item-40/);
 		// One link per line — the count never enters the text.
 		assert.equal(result.content.length, 1);
-		assert.equal(result.scrollsPerformed, 1);
+		assert.equal(result._meta.scrollsPerformed, 1);
 	} finally {
 		await s.close();
 	}
