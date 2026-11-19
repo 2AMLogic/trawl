@@ -236,8 +236,7 @@ export function createPacer({
 	//   crawlDelayMs   a freshly learned (clamped) Crawl-delay: used for this
 	//                  wait and persisted for the next run.
 	//   useStoredDelay when no fresh delay is given, honour the last one stored
-	//                  (default). `false` = minimum interval only, e.g. under
-	//                  --ignore-robots.
+	//                  (default). `false` = minimum interval only.
 	//   admit          called after the wait, immediately before the attempt
 	//                  is recorded and `start()` runs; if it throws, nothing
 	//                  is recorded or sent and the error propagates. Used to

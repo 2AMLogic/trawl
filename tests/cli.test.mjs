@@ -55,6 +55,15 @@ test("treats --ignore-robots as a boolean", () => {
 	assert.equal(parseArgs(["u"])["--ignore-robots"], undefined);
 });
 
+test("treats --respect-robots as a boolean, independent of --ignore-robots", () => {
+	assert.equal(parseArgs(["--respect-robots", "u"])["--respect-robots"], true);
+	assert.equal(parseArgs(["u"])["--respect-robots"], undefined);
+	const both = parseArgs(["--respect-robots", "--ignore-robots", "u"]);
+	assert.equal(both["--respect-robots"], true);
+	assert.equal(both["--ignore-robots"], true);
+	assert.throws(() => parseArgs(["--respect-robots=1", "u"]), /Unknown option/);
+});
+
 test("keeps the url positional even after valued flags", () => {
 	const args = parseArgs(["--timeout", "5000", "https://example.com"]);
 	assert.deepEqual(args._, ["https://example.com"]);

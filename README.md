@@ -57,6 +57,16 @@ trawl mcp                  Serve fetch_page/fetch_links over MCP (stdio)
                             page.
       --then-wait <css>    After the preceding --click, block until this
                             selector appears
+      --scroll <target>    Scroll the loaded page before extracting:
+                            "bottom" scrolls to the page's current bottom
+                            (lazy loaders append rows when they see it),
+                            anything else is a CSS selector to bring into
+                            view. Repeatable; runs in the order given, after
+                            any --click, each followed by --settle. Fails
+                            (exit 1) if a selector never matches (within
+                            --timeout), or if a scroll would load another
+                            page.
+      --max-scrolls <n>    Cap on --scroll steps              (default: 3)
       --settle <ms>        Extra pause after load                (default: 0)
       --wait-until <ev>    load | domcontentloaded | networkidle
                                                         (default: networkidle)
@@ -74,7 +84,10 @@ trawl mcp                  Serve fetch_page/fetch_links over MCP (stdio)
       --screenshot <file>  Also write a PNG screenshot to this path
       --full-page          Screenshot the whole scroll height
       --viewport <WxH>     Viewport size, e.g. 1280x800     (default: 1280x2000)
-      --ignore-robots      Skip the robots.txt check (not --min-interval)
+      --respect-robots     Refuse the read if robots.txt disallows the path or
+                            cannot be fetched. Default: robots.txt is advisory
+                            (its Crawl-delay still applies)
+      --ignore-robots      Accepted for compatibility; does nothing
       --min-interval <ms>  Minimum gap between requests to one origin,
                             across separate runs; Crawl-delay still wins if
                             larger. 0 drops the floor only. Max 60000.
@@ -85,8 +98,8 @@ trawl mcp                  Serve fetch_page/fetch_links over MCP (stdio)
                             ${XDG_CACHE_HOME:-~/.cache}/trawl
       --ignore-cooldown    Fetch even if the origin is cooling down after a
                             403/429/503 block (see exit code 4). Bypasses the
-                            refusal only: robots.txt and pacing still apply,
-                            and a new block is still recorded.
+                            refusal only: pacing and any Crawl-delay still
+                            apply, and a new block is still recorded.
       --ignore-budget      Render even if the origin has used up its page
                             budget — 60 per rolling hour, 200 per rolling
                             day, shared by every trawl entry point through
@@ -142,6 +155,7 @@ trawl https://example.com -s '#main' -f html       # one subtree, as HTML
 trawl https://example.com -f md                    # article, as Markdown
 trawl https://example.com -w '.loaded' --settle 500
 trawl https://example.com --click '#show-details' --then-wait '#details' -s '#details'
+trawl https://example.com/listing --scroll bottom --scroll bottom --settle 300
 trawl https://example.com --har trace.har          # + the full network trace
 trawl https://example.com --screenshot page.png --full-page   # text + a PNG
 trawl login https://example.com --profile ~/.trawl/example    # sign in once
@@ -185,6 +199,38 @@ in the other page however late it starts; the 250 ms pause after each click
 is there so a click handler's short-timer navigation is caught and reported
 against the step that caused it. Scripts on the page can still make their
 own background requests in response to a click, as they would for a person.
+
+### Scrolling before extraction
+
+Many listing pages render a first screen of rows and load the rest as the
+reader scrolls, so a plain fetch returns only what the first viewport
+triggers. `--scroll <target>` scrolls the loaded page before extracting:
+`bottom` scrolls to the page's current bottom — where a lazy loader appends
+more rows once it sees you — and any other value is a CSS selector whose
+first match is scrolled into view. Repeat the flag to scroll several times;
+they run in the order given, after any `--click`, and each is followed by
+`--settle` so what the previous scroll appended is in place before the next
+one looks for the (moved) bottom:
+
+```sh
+trawl https://example.com/listing --scroll bottom --scroll bottom --settle 300
+trawl https://example.com/listing --scroll '#more-results' --settle 500
+```
+
+Scrolling happens inside the one page load: it reveals content on the page
+trawl already fetched, it never opens a second one. A scroll handler that
+tries to load a different page — the same guard clicks use — is stopped
+before the request goes out and fails the run, so scrolling stays paced and
+makes no request of its own beyond the page itself. A selector that never
+matches within `--timeout` fails the run naming the step and selector
+(`scroll step 1 of 2 ("#more"): no element matched, or it could not be scrolled into view, within 30000ms`).
+
+`--max-scrolls` caps how many steps a run may make, defaulting to 3; a
+longer listing raises it explicitly (`--max-scrolls 10`). A list longer than
+the cap, or a bad cap, is a usage error before any request is made. The run
+reports what it did as `performed 2 scrolls` on stderr (stdout stays exactly
+the extracted content), and library/MCP callers get the count as
+`scrollsPerformed`.
 
 ### Markdown
 
@@ -459,15 +505,16 @@ the error says so without repeating the browser's message. `--domain`,
 `--allow` and `--include-auth` without `--cookies` are an error.
 
 The `robots.txt` request carries the cookies that match it, so a site whose
-`robots.txt` itself answers a 5xx to a cookie-less client (which trawl treats
-as a full disallow) no longer needs `--ignore-robots`. "Match" is what a
+`robots.txt` itself answers a 5xx to a cookie-less client (which `--respect-robots`
+treats as a full disallow) can still be read in strict mode. "Match" is what a
 browser would send to `<origin>/robots.txt`: a host-only cookie only for its
 exact host, a `.example.com` cookie for that domain and its subdomains, a
 path of `/` or `/robots.txt`, a `Secure` cookie only over `https`, nothing
 expired. If none match, the request has no `Cookie` header at all. A redirect
 to another origin (another host or port, or `http` to `https`) does not carry
-the header along, so a cookie-gated `robots.txt` reached that way is refused,
-and the error says the cookies did not follow the redirect; a redirect within
+the header along, so a cookie-gated `robots.txt` reached that way is refused
+in strict mode, with an error that says the cookies did not follow the
+redirect; a redirect within
 the same origin does carry it, so a cookie scoped to `/robots.txt` can reach
 another path on that host if `robots.txt` redirects there. A `Set-Cookie` on
 the `robots.txt` response is ignored. A `--profile` fetch's `robots.txt`
@@ -497,11 +544,14 @@ import { render } from "@rjwalters/trawl";
 const { body, status } = await render("https://example.com", { format: "text" });
 ```
 
-`render()` consults `robots.txt` for `http(s)` URLs before it navigates, and
-throws if the path is disallowed or `robots.txt` is unreachable (5xx, network
-error, timeout) — the same default the CLI has. Pass
-`{ ignoreRobots: true }` to skip it. Non-`http(s)` URLs (`file://`, for
-instance) are never checked. It also sends the default trawl `User-Agent`
+`render()` consults `robots.txt` for `http(s)` URLs before it navigates, but
+only as advice: a disallowed path or an unreachable `robots.txt` (5xx, network
+error, timeout) does not stop the read, and a matching `Crawl-delay` still
+paces it — the same default the CLI has. Pass `{ respectRobots: true }` for
+strict mode, which throws before any page navigation in those cases.
+`{ ignoreRobots: true }` is still accepted and does nothing, including
+alongside `respectRobots`. Non-`http(s)` URLs (`file://`, for instance) are
+never checked. It also sends the default trawl `User-Agent`
 unless you pass your own `userAgent`.
 
 `render()` also rejects with an `AuthWallError` (`err.name ===
@@ -560,6 +610,21 @@ A step that cannot run rejects with a `ClickError` (`err.name ===
 const { body } = await render("https://example.com/video", {
   click: ["button.show-transcript", { selector: "#more", waitFor: "#line-40" }],
   selector: "#transcript",
+});
+```
+
+`render()` accepts the same scroll steps as `{ scroll: [...] }`: each entry
+is `"bottom"` or a CSS selector, run after any clicks with `{ maxScrolls }`
+(default 3) capping the list — an over-cap list rejects before any request.
+A step that cannot run rejects with a `ScrollError` (`err.name ===
+"ScrollError"`, with `err.step` counted from 1 and `err.selector` carrying
+the target), and every result reports the steps that ran as
+`scrollsPerformed`.
+
+```js
+const { body, scrollsPerformed } = await render("https://example.com/listing", {
+  scroll: ["bottom", "bottom"],
+  settle: 300,
 });
 ```
 
@@ -622,8 +687,11 @@ talked into pressing things on it.
 
 | Tool | Arguments |
 | --- | --- |
-| `fetch_page` | `url`, `format?` (`text`\|`html`\|`links`\|`title`\|`markdown`), `selector?`, `wait_for?`, `wait_until?` (`load`\|`domcontentloaded`\|`networkidle`), `settle_ms?`, `timeout_ms?` |
-| `fetch_links` | `url`, `selector?`, `wait_until?` (`load`\|`domcontentloaded`\|`networkidle`), `settle_ms?`, `timeout_ms?` |
+| `fetch_page` | `url`, `format?` (`text`\|`html`\|`links`\|`title`\|`markdown`), `selector?`, `wait_for?`, `wait_until?` (`load`\|`domcontentloaded`\|`networkidle`), `settle_ms?`, `timeout_ms?`, `scroll?`, `max_scrolls?`, `respect_robots?` |
+| `fetch_links` | `url`, `selector?`, `wait_until?` (`load`\|`domcontentloaded`\|`networkidle`), `settle_ms?`, `timeout_ms?`, `scroll?`, `max_scrolls?`, `respect_robots?` |
+
+`respect_robots` is a boolean and defaults to false: `robots.txt` is advisory.
+Set it to `true` for strict mode (see [Etiquette](#etiquette)).
 
 `fetch_links` exists separately so an agent can crawl without pulling whole
 page bodies into its context. Both tools take the load controls the CLI
@@ -633,7 +701,10 @@ go idle" recipe above is reachable from an agent too: pass
 the 30,000 ms default. `settle_ms` and `timeout_ms` are capped at 600,000 ms,
 and `timeout_ms` must be at least 1 — unlike the CLI's `--timeout`, it will not
 take `0` as Playwright's "no timeout", which would hang a tool call with no way
-to cancel it. Results longer than 100,000 characters are
+to cancel it. Both tools also take the CLI's scrolling: `scroll` is an ordered
+list of `"bottom"` / CSS-selector steps and `max_scrolls` caps it at 3 by
+default — scrolling stays inside the one page load, and the result carries
+`scrollsPerformed` alongside the text. Results longer than 100,000 characters are
 truncated with a notice saying so; set `TRAWL_MCP_MAX_CHARS` to change the
 budget. A failed fetch comes back as a tool error — the server keeps serving.
 Tool calls are paced per origin with the default 3000 ms floor and count
@@ -657,13 +728,14 @@ the window. There is no MCP-level budget override.
 ## Status
 
 Early but usable: `trawl` renders client-side pages to text, HTML, links,
-title or Markdown, captures HAR traffic and screenshots, and enforces
-`robots.txt`. It detects auth walls, drives pages with click steps, paces
-requests across runs, and backs off politely on blocks (403/429/503, and
-challenge pages served with 200). Browser profiles
-(`trawl login`, `--profile`) carry authenticated sessions across runs, and
-cookies can be imported from a captured HAR for replay, with opt-in redaction
-of the HAR itself. See [CHANGELOG.md](CHANGELOG.md) for what has shipped and
+title or Markdown, captures HAR traffic and screenshots, and consults
+`robots.txt` — advisory by default; a read is refused for it only in strict
+`--respect-robots` mode. It detects auth walls, drives pages with click
+steps, paces requests across runs, and backs off politely on blocks
+(403/429/503, and challenge pages served with 200).
+Browser profiles (`trawl login`, `--profile`) carry authenticated sessions
+across runs, and cookies can be imported from a captured HAR for replay,
+with opt-in redaction of the HAR itself. See [CHANGELOG.md](CHANGELOG.md) for what has shipped and
 [ROADMAP.md](ROADMAP.md) for what's next; the
 [issues](https://github.com/rjwalters/trawl/issues) are the day-to-day
 tracker.
@@ -673,9 +745,17 @@ tracker.
 `trawl` is a browser you drive from a script, and it behaves like one by
 default rather than asking you to promise you will.
 
-- **`robots.txt` is checked before every `http(s)` fetch.** A disallowed
-  path fails with the rule that blocked it, naming `--ignore-robots`, and no
-  page navigation happens. Matching is the classic baseline: `User-agent`
+- **`robots.txt` is advisory.** Each invocation reads the one URL you gave
+  it, at a human pace, which is the same act as you opening that page in a
+  browser, so a disallowed path or an unreachable `robots.txt` does not stop
+  it. Abuse is limited by rate and volume instead: per-origin pacing, back-off
+  on blocks (403/429/503 and challenge pages, below), and no crawl mode.
+  `trawl` still fetches `robots.txt` for `http(s)` URLs, so a matching group's `Crawl-delay` still paces the read
+  (a matching `Disallow` does not switch it off). **`--respect-robots`**
+  (library: `respectRobots: true`; MCP: `respect_robots: true`) is the strict
+  opt-in: a disallowed path then fails with the rule that blocked it and no
+  page navigation happens. The rest of this bullet and the next describe that
+  strict mode. Matching is the classic baseline: `User-agent`
   group selection (a group naming `trawl` beats `*`), longest matching rule
   wins, and `Allow` breaks a tie with `Disallow`. Rule paths support the
   RFC 9309 §2.2.3 special characters: `*` matches any run of characters
@@ -683,7 +763,7 @@ default rather than asking you to promise you will.
   the end of the path — so `Disallow: /*.pdf$` refuses `/docs/a.pdf`. A `$`
   anywhere else is literal. Percent-encoding is not normalised: both sides
   are compared as written.
-- **An unreachable `robots.txt` blocks the run** (RFC 9309 §2.3.1.4). A 5xx,
+- **In strict mode an unreachable `robots.txt` blocks the run** (RFC 9309 §2.3.1.4). A 5xx,
   a network error (DNS failure, refused connection), a timeout (10s), or a
   response body that fails mid-read is treated as a full disallow, and the
   error says which — e.g. `robots.txt is unreachable: …/robots.txt returned
@@ -701,8 +781,8 @@ default rather than asking you to promise you will.
   `http`-to-`https` or `example.com`-to-`www.example.com` redirect is
   refused, and when that redirect target answered with a 5xx or a body that
   failed mid-read the error adds that the cookies did not follow it (not on a
-  timeout or network error before any response, and not when a rule matched;
-  use `--ignore-robots` to override); a redirect within the same origin keeps the header; and
+  timeout or network error before any response, and not when a rule matched);
+  a redirect within the same origin keeps the header; and
   a `Set-Cookie` on the `robots.txt` response is ignored, not stored in the
   profile. On `--profile` the jar applies the browser's own matching rules,
   `Secure` included, so a `Secure` cookie goes to `http://localhost` and
@@ -721,10 +801,12 @@ default rather than asking you to promise you will.
   never the underlying error's text. A plain fetch sends no cookies, so a
   site that serves an interstitial to cookie-less clients can still block it
   here.
-- **`--ignore-robots` overrides it**, because there are legitimate reasons:
-  your own staging site, a page you are authenticated to, a `robots.txt`
-  that blocks all bots but permits the human reading the same URL, or one
-  that is down. It skips the `robots.txt` request entirely.
+- **`--ignore-robots` is a no-op**, kept so existing scripts keep working. It
+  no longer skips the `robots.txt` request, and next to `--respect-robots` the
+  read is still strict.
+- **One URL per invocation; link extraction only returns links.** `trawl`
+  never follows links. `--format links` and `fetch_links` print the links on
+  the page you supplied and request nothing further.
 - **Requests are paced per origin, across runs.** A shell loop of separate
   `trawl` calls is spaced out, not just the requests inside one call. Before
   each request it makes to an origin, `trawl` waits until
@@ -758,8 +840,7 @@ default rather than asking you to promise you will.
   - *Opting out:* `--no-pacing` (library: `pacing: false`) turns cross-run
     pacing off; `Crawl-delay` is then still honored as a pause between the
     `robots.txt` request and the page request within the one run.
-    `--ignore-robots` skips `robots.txt` and its `Crawl-delay`, but not the
-    `--min-interval` floor.
+    `--ignore-robots` does nothing here.
 - **A block puts the origin on a cooldown, across runs.** When the page
   navigation itself answers `403 Forbidden`, `429 Too Many Requests` or `503
   Service Unavailable`, or the page served with `200` carries an explicit
@@ -799,9 +880,9 @@ default rather than asking you to promise you will.
     run only.
   - *Overriding it:* `--ignore-cooldown` (library: `ignoreCooldown: true`)
     sends the request anyway for that one call. It does not delete the
-    record, a new block is still recorded, and `robots.txt` and pacing
-    still apply; `--ignore-robots` and `--no-pacing` do not skip the
-    cooldown either. To forget every cooldown, delete the `cooldown/`
+    record, a new block is still recorded, and pacing and any
+    `Crawl-delay` still apply; `--ignore-robots` and `--no-pacing` do not skip
+    the cooldown either. To forget every cooldown, delete the `cooldown/`
     directory.
 - **A rolling page budget caps how much one origin can absorb.** Pacing
   spaces requests; the budget bounds their number. Every render counts one
@@ -832,8 +913,9 @@ default rather than asking you to promise you will.
     unavailable, not that the budget is spent.
 - **It identifies itself**: the default `User-Agent` is
   `trawl/<version> (+https://github.com/rjwalters/trawl)`, so an operator
-  reading their logs can see what hit them and block it if they want.
-  `-A`/`--user-agent` still overrides it.
+  reading their logs can see what hit them and block it if they want. Every
+  request keeps it (the `robots.txt` request included) unless you pass
+  `-A`/`--user-agent` yourself.
 
 Beyond that: don't point it at a site faster than you'd click, and respect
 Terms of Service. It ships no proxy rotation, no fingerprint spoofing, and

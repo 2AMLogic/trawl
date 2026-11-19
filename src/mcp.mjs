@@ -13,7 +13,13 @@
 // state between calls.
 
 import { readFileSync } from "node:fs";
-import { FORMATS, render } from "./render.mjs";
+import {
+	DEFAULT_MAX_SCROLLS,
+	FORMATS,
+	normalizeScrollOptions,
+	normalizeScrollSteps,
+	render,
+} from "./render.mjs";
 
 // Page text routinely blows past a sane tool-result budget. v1 truncates with
 // a notice rather than paginating: `fetch_links` already covers the
@@ -84,6 +90,13 @@ const LOAD_CONTROL_PROPERTIES = {
 			"Defaults to 0. Use with wait_until=domcontentloaded to give a " +
 			"client-rendered page time to paint.",
 	},
+	respect_robots: {
+		type: "boolean",
+		description:
+			"Strict mode: refuse the read if robots.txt disallows the path or " +
+			"cannot be fetched. Defaults to false, where robots.txt is advisory " +
+			"(its Crawl-delay still applies).",
+	},
 	timeout_ms: {
 		type: "number",
 		minimum: 1,
@@ -92,6 +105,33 @@ const LOAD_CONTROL_PROPERTIES = {
 			`Navigation timeout in milliseconds, 1 to ${MAX_WAIT_MS}. Defaults ` +
 			"to 30000. 0 is rejected rather than read as Playwright's \"no " +
 			"timeout\", which would hang this call with no way to cancel it.",
+	},
+};
+
+// Scroll controls, spread into both tools next to the load controls.
+// Scrolling stays inside the admitted render — each step reveals content on
+// the already-loaded page (a lazy loader appends more rows when it sees the
+// bottom); a scroll that would open another document fails the call, the
+// same way a click would.
+const SCROLL_PROPERTIES = {
+	scroll: {
+		type: "array",
+		items: { type: "string", minLength: 1 },
+		description:
+			'Ordered scroll steps to run on the loaded page before extraction: ' +
+			'"bottom" scrolls to the page\'s current bottom (a lazy loader ' +
+			"appends more rows when it sees the bottom), any other string is a " +
+			"CSS selector to bring into view. Each step pauses settle_ms " +
+			"afterwards. Defaults to no scrolling.",
+	},
+	max_scrolls: {
+		type: "integer",
+		minimum: 0,
+		default: DEFAULT_MAX_SCROLLS,
+		description:
+			`Cap on scroll steps, ${DEFAULT_MAX_SCROLLS} unless raised. A ` +
+			"scroll list longer than the cap is rejected before the page is " +
+			"fetched.",
 	},
 };
 
@@ -127,6 +167,7 @@ export const TOOLS = [
 						"appears after the initial paint.",
 				},
 				...LOAD_CONTROL_PROPERTIES,
+				...SCROLL_PROPERTIES,
 			},
 			required: ["url"],
 			additionalProperties: false,
@@ -150,6 +191,7 @@ export const TOOLS = [
 					description: "CSS selector to scope link extraction to.",
 				},
 				...LOAD_CONTROL_PROPERTIES,
+				...SCROLL_PROPERTIES,
 			},
 			required: ["url"],
 			additionalProperties: false,
@@ -197,6 +239,15 @@ function optionalMs(args, key, { min, max = MAX_WAIT_MS }) {
 	return value;
 }
 
+// Absent or null means "not supplied"; anything else must be a real boolean,
+// so the string "false" cannot silently turn strict mode on.
+function optionalBoolean(args, key) {
+	const value = args?.[key];
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== "boolean") throw new Error(`"${key}" must be a boolean`);
+	return value;
+}
+
 // Returns ONLY the keys the caller actually supplied. This is load-bearing:
 // `render()` merges `{ ...DEFAULTS, ...options }`, and an object spread does
 // not skip `undefined` values — so always setting these three would overwrite
@@ -211,10 +262,52 @@ function loadControlsFor(args) {
 	// floors at 1 because Playwright reads 0 as "no timeout".
 	const settle = optionalMs(args, "settle_ms", { min: 0 });
 	const timeout = optionalMs(args, "timeout_ms", { min: 1 });
+	const respectRobots = optionalBoolean(args, "respect_robots");
 	return {
+		...(respectRobots !== undefined && { respectRobots }),
 		...(waitUntil !== undefined && { waitUntil }),
 		...(settle !== undefined && { settle }),
 		...(timeout !== undefined && { timeout }),
+	};
+}
+
+// The scroll steps as given ("bottom" / CSS selector strings); an absent or
+// null `scroll` is "not supplied", and values are validated here so a bad
+// step is a tool error naming the step, before any render work.
+function optionalScroll(args) {
+	const value = args?.scroll;
+	if (value === undefined || value === null) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			'"scroll" must be an array of "bottom" / CSS selector strings',
+		);
+	}
+	return normalizeScrollSteps(value).map((s) => s.target);
+}
+
+function optionalScrollCount(args) {
+	const value = args?.max_scrolls;
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+		throw new Error('"max_scrolls" must be a non-negative integer');
+	}
+	return value;
+}
+
+// Same absent-keys discipline as `loadControlsFor`: nothing is set unless
+// the caller supplied it. The over-cap check runs here too, via the same
+// validator `render()` applies, so a bad call is rejected as a tool error
+// and never reaches the page. Either control supplied maps both: the step
+// list always as an array (empty when a cap alone was given — a cap without
+// steps requests zero steps).
+function scrollControlsFor(args) {
+	const scroll = optionalScroll(args);
+	const maxScrolls = optionalScrollCount(args);
+	if (scroll === undefined && maxScrolls === undefined) return {};
+	const { steps } = normalizeScrollOptions({ scroll, maxScrolls });
+	return {
+		scroll: steps.map((s) => s.target),
+		...(maxScrolls !== undefined && { maxScrolls }),
 	};
 }
 
@@ -228,6 +321,7 @@ export function renderOptionsFor(name, args = {}) {
 				format: "links",
 				selector: requireString(args, "selector"),
 				...loadControlsFor(args),
+				...scrollControlsFor(args),
 			},
 		};
 	}
@@ -245,6 +339,7 @@ export function renderOptionsFor(name, args = {}) {
 				selector: requireString(args, "selector"),
 				waitForSelector: requireString(args, "wait_for"),
 				...loadControlsFor(args),
+				...scrollControlsFor(args),
 			},
 		};
 	}
@@ -264,6 +359,9 @@ export async function callTool(name, args = {}, deps = {}) {
 		const result = await doRender(url, options);
 		return {
 			content: [{ type: "text", text: truncate(result.body ?? "", limit) }],
+			// How many scroll steps ran, alongside the text — the text itself
+			// stays exactly the extracted content.
+			scrollsPerformed: result.scrollsPerformed,
 		};
 	} catch (err) {
 		return {

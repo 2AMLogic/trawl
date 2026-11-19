@@ -23,7 +23,7 @@ Node 24 (`.github/workflows/ci.yml`, Ubuntu).
 | `networkidle` timeout retried once with `domcontentloaded` | done | `src/render.mjs`, README "Pages that never go idle" |
 | Click steps (`--click`, `--then-wait`) on the CLI and library | done | #56, `tests/click.test.mjs` |
 | HAR capture, `--har-omit-content`, `--har-redact` | done | #84 / PR #85, `tests/har-redact.test.mjs` |
-| `robots.txt` check before every `http(s)` fetch; unreachable means disallow | done | #37, `src/robots.mjs` |
+| `robots.txt` consulted for every `http(s)` fetch; advisory by default (`Crawl-delay` applies), `--respect-robots` for strict refusal | done | #37, #143, `src/robots.mjs` |
 | `robots.txt` rule paths honour `*` and a trailing `$` (RFC 9309 §2.2.3) | done | #109 / PR #114, `tests/robots.test.mjs` |
 | Per-origin pacing across runs, `Crawl-delay` honored | done | #38, `src/pacing.mjs` |
 | Per-origin cooldown after 429/503 (exit code 4) | done | #39 / PR #61, `src/cooldown.mjs` |

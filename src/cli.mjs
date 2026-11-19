@@ -37,6 +37,7 @@ import {
 	CooldownError,
 	FORMATS,
 	normalizeClickSteps,
+	normalizeScrollOptions,
 	render,
 } from "./render.mjs";
 
@@ -84,6 +85,16 @@ Options:
                             page.
       --then-wait <css>    After the preceding --click, block until this
                             selector appears
+      --scroll <target>    Scroll the loaded page before extracting:
+                            "bottom" scrolls to the page's current bottom
+                            (lazy loaders append rows when they see it),
+                            anything else is a CSS selector to bring into
+                            view. Repeatable; runs in the order given, after
+                            any --click, each followed by --settle. Fails
+                            (exit 1) if a selector never matches (within
+                            --timeout), or if a scroll would load another
+                            page.
+      --max-scrolls <n>    Cap on --scroll steps              (default: 3)
       --settle <ms>        Extra pause after load                (default: 0)
       --wait-until <ev>    load | domcontentloaded | networkidle
                                                         (default: networkidle)
@@ -109,7 +120,10 @@ Options:
       --screenshot <file>  Also write a PNG screenshot to this path
       --full-page          Screenshot the whole scroll height
       --viewport <WxH>     Viewport size, e.g. 1280x800     (default: 1280x2000)
-      --ignore-robots      Skip the robots.txt check (not --min-interval)
+      --respect-robots     Refuse the read if robots.txt disallows the path or
+                            cannot be fetched. Default: robots.txt is advisory
+                            (its Crawl-delay still applies)
+      --ignore-robots      Accepted for compatibility; does nothing
       --min-interval <ms>  Minimum gap between requests to one origin,
                             across separate runs; Crawl-delay still wins if
                             larger. 0 drops the floor only. Max ${MAX_MIN_INTERVAL_MS}.
@@ -120,8 +134,8 @@ Options:
                             \${XDG_CACHE_HOME:-~/.cache}/trawl
       --ignore-cooldown    Fetch even if the origin is cooling down after a
                             403/429/503 block (see exit code 4). Bypasses the
-                            refusal only: robots.txt and pacing still apply,
-                            and a new block is still recorded.
+                            refusal only: pacing and any Crawl-delay still
+                            apply, and a new block is still recorded.
       --ignore-budget      Render even if the origin has used up its page
                             budget — 60 per rolling hour, 200 per rolling
                             day, shared by every trawl entry point through
@@ -177,6 +191,8 @@ Examples:
   trawl https://example.com -w '.results-loaded' --settle 500
   trawl https://example.com --click '#show-details' --then-wait '#details' \\
         -s '#details'
+  trawl https://example.com/listing --scroll bottom --scroll bottom \\
+        --settle 300
   trawl https://example.com --screenshot page.png --full-page
   trawl login https://example.com --profile ~/.trawl/example
   trawl https://example.com --profile ~/.trawl/example
@@ -237,6 +253,8 @@ const VALUED = new Set([
 	"--min-interval",
 	"--click",
 	"--then-wait",
+	"--scroll",
+	"--max-scrolls",
 	"--cookies",
 	"--domain",
 	"--allow",
@@ -244,7 +262,8 @@ const VALUED = new Set([
 
 // `--click` repeats, and each `--then-wait` belongs to the `--click` right
 // before it, so both are folded into one ordered list as they are parsed
-// rather than stored as a last-one-wins value.
+// rather than stored as a last-one-wins value. `--scroll` repeats the same
+// way, into its own ordered list.
 function addClickArg(out, key, value) {
 	out.clicks ??= [];
 	if (key === "--click") {
@@ -276,17 +295,22 @@ export function parseArgs(argv) {
 		if (eq > -1) {
 			const key = arg.slice(0, eq);
 			if (!VALUED.has(key)) throw new Error(`Unknown option: ${key}`);
-			if (key === "--click" || key === "--then-wait") {
-				addClickArg(out, key, arg.slice(eq + 1));
+			const value = arg.slice(eq + 1);
+			if (key === "--scroll") {
+				(out.scrolls ??= []).push(value);
+			} else if (key === "--click" || key === "--then-wait") {
+				addClickArg(out, key, value);
 			} else {
-				out[key] = arg.slice(eq + 1);
+				out[key] = value;
 			}
 			continue;
 		}
 		if (VALUED.has(arg)) {
 			const value = argv[++i];
 			if (value === undefined) throw new Error(`${arg} requires a value`);
-			if (arg === "--click" || arg === "--then-wait") {
+			if (arg === "--scroll") {
+				(out.scrolls ??= []).push(value);
+			} else if (arg === "--click" || arg === "--then-wait") {
 				addClickArg(out, arg, value);
 			} else {
 				out[arg] = value;
@@ -301,6 +325,7 @@ export function parseArgs(argv) {
 			arg === "--har-redact" ||
 			arg === "--full-page" ||
 			arg === "--ignore-robots" ||
+			arg === "--respect-robots" ||
 			arg === "--no-readability" ||
 			arg === "--no-auth-check" ||
 			arg === "--no-pacing" ||
@@ -320,6 +345,16 @@ function toNumber(value, flag) {
 	const n = Number(value);
 	if (!Number.isFinite(n) || n < 0) {
 		throw new Error(`${flag} expects a non-negative number, got "${value}"`);
+	}
+	return n;
+}
+
+// For counts (--max-scrolls): a whole number of steps, not a duration.
+function toCount(value, flag) {
+	// Number("") and Number("  ") are 0: a blank cap must not pass as one.
+	const n = String(value).trim() === "" ? NaN : Number(value);
+	if (!Number.isInteger(n) || n < 0) {
+		throw new Error(`${flag} expects a non-negative integer, got "${value}"`);
 	}
 	return n;
 }
@@ -388,8 +423,18 @@ export async function main(argv, deps = {}) {
 		args["--min-interval"] === undefined
 			? undefined
 			: validateMinInterval(args["--min-interval"], "--min-interval");
-	// Same up-front rule for the click list (empty selectors and the like).
+	// Same up-front rule for the click list (empty selectors and the like)
+	// and the scroll list (a bad step, an invalid cap, or an over-cap list
+	// all fail here, before robots.txt, pacing or any browser launch).
 	const click = args.clicks ? normalizeClickSteps(args.clicks) : undefined;
+	const scrolls = args.scrolls;
+	const maxScrolls =
+		args["--max-scrolls"] !== undefined
+			? toCount(args["--max-scrolls"], "--max-scrolls")
+			: undefined;
+	if (scrolls !== undefined || maxScrolls !== undefined) {
+		normalizeScrollOptions({ scroll: scrolls, maxScrolls });
+	}
 	// Playwright writes a zip archive for a .zip path; redaction rewrites JSON.
 	if (args["--har-redact"] && !args["--har"]) throw new Error("--har-redact requires --har");
 	if (args["--har-redact"] && /\.zip$/i.test(args["--har"])) {
@@ -409,6 +454,8 @@ export async function main(argv, deps = {}) {
 		selector: args["--selector"],
 		waitForSelector: args["--wait-for"],
 		...(click ? { click } : {}),
+		...(scrolls ? { scroll: scrolls } : {}),
+		...(maxScrolls !== undefined ? { maxScrolls } : {}),
 		settle: args["--settle"] ? toNumber(args["--settle"], "--settle") : 0,
 		waitUntil: args["--wait-until"] ?? "networkidle",
 		timeout: args["--timeout"]
@@ -422,6 +469,7 @@ export async function main(argv, deps = {}) {
 		screenshot: args["--screenshot"],
 		fullPage: !!args["--full-page"],
 		ignoreRobots: args["--ignore-robots"] === true,
+		respectRobots: args["--respect-robots"] === true,
 		// Deliberately NOT defaulted the way `trawl login`'s profile dir is
 		// (#24): a plain fetch stays ephemeral-by-default (render.mjs's own
 		// documented isolation guarantee — nothing one run does is visible to
@@ -446,6 +494,13 @@ export async function main(argv, deps = {}) {
 			`trawl: ${result.waitUntilFallback.from} timed out; retried with ` +
 				`${result.waitUntilFallback.to}. Pass --wait-until ` +
 				`${result.waitUntilFallback.to} --settle <ms> to skip the wait next time.\n`,
+		);
+	}
+	// The scroll count goes to stderr only, so stdout stays exactly the
+	// extracted content.
+	if (args.scrolls?.length > 0) {
+		process.stderr.write(
+			`trawl: performed ${plural(result.scrollsPerformed, "scroll")}\n`,
 		);
 	}
 	if (args["--show-status"]) {
@@ -544,7 +599,6 @@ function loadFetchCookies(args, { profileDir, stderr }) {
 // fetched. Today `browserWouldReject` already skips every such cookie, so
 // this only speaks up should the two rules ever drift apart.
 function robotsOmitted(args, cookies) {
-	if (args["--ignore-robots"] === true) return [];
 	let target;
 	try {
 		target = new URL(args._[0]);
