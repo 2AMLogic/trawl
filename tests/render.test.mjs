@@ -1178,7 +1178,7 @@ test("robots.txt fetches from separate render() calls are paced on the minimum i
 	assert.equal(readdirSync(path.join(pacingStateDir, "pacing")).length, 1);
 });
 
-test("pacing: false neither waits across calls nor writes state", async () => {
+test("pacing: false neither waits across calls nor writes pacing state", async () => {
 	const s = await serve({ "/robots.txt": "User-agent: *\nAllow: /\n" });
 	const pacingStateDir = freshStateDir();
 	try {
@@ -1199,7 +1199,9 @@ test("pacing: false neither waits across calls nor writes state", async () => {
 	}
 	assert.equal(s.hits.length, 2);
 	assert.ok(s.hits[1].at - s.hits[0].at < 5000, "pacing: false still waited");
-	assert.deepEqual(readdirSync(pacingStateDir), []);
+	// Pacing wrote nothing, but the page budget is not disabled by it: the
+	// two admitted attempts were still counted (src/budget.mjs).
+	assert.deepEqual(readdirSync(pacingStateDir), ["budget"]);
 });
 
 test("Crawl-delay paces robots and page requests across two render() calls", opts, async () => {
@@ -1281,9 +1283,17 @@ test("an unwritable state dir warns on stderr and still renders", opts, async ()
 	const parent = freshStateDir();
 	const notADir = path.join(parent, "occupied");
 	writeFileSync(notADir, "a file, not a directory");
+	// Only the *pacing* state is broken: the budget (src/budget.mjs) refuses
+	// rather than render when its own state cannot be recorded, so it keeps
+	// its usable stateDir while pacing degrades to in-run here.
+	const usableStateDir = freshStateDir();
 	try {
 		const { result, stderr } = await captureStderr(() =>
-			render(`${s.origin}/page.html`, { pacingStateDir: notADir, minIntervalMs: 300 }),
+			render(`${s.origin}/page.html`, {
+				stateDir: usableStateDir,
+				pacingStateDir: notADir,
+				minIntervalMs: 300,
+			}),
 		);
 		assert.match(result.body, /Still here/);
 		assert.match(stderr(), /pacing state directory .* is unusable/);

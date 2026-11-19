@@ -78,7 +78,7 @@ trawl mcp                  Serve fetch_page/fetch_links over MCP (stdio)
       --min-interval <ms>  Minimum gap between requests to one origin,
                             across separate runs; Crawl-delay still wins if
                             larger. 0 drops the floor only. Max 60000.
-                                                             (default: 1000)
+                             (default: 3000, plus 0-500ms jitter)
       --no-pacing          Don't pace requests across runs (Crawl-delay is
                             still honored within a run). Pacing state lives
                             in $TRAWL_STATE_DIR, else
@@ -87,6 +87,12 @@ trawl mcp                  Serve fetch_page/fetch_links over MCP (stdio)
                             429/503 (see exit code 4). Bypasses the refusal
                             only: robots.txt and pacing still apply, and a
                             new 429/503 is still recorded.
+      --ignore-budget      Render even if the origin has used up its page
+                            budget — 60 per rolling hour, 200 per rolling
+                            day, shared by every trawl entry point through
+                            the same state directory (see exit code 5).
+                            Bypasses the refusal only: the attempt is still
+                            counted, and cooldowns and pacing still apply.
       --profile <dir>      Persistent browser profile (cookies/localStorage
                             survive across runs); also $TRAWL_PROFILE_DIR.
                             Populate one with "trawl login" (which defaults
@@ -546,7 +552,9 @@ const { body } = await render("https://example.com/video", {
 
 `render()` paces its `http(s)` requests across calls and processes the same
 way the CLI does (see [Etiquette](#etiquette)): `{ minIntervalMs }` sets the
-per-origin floor (default 1000, 0–60000), `{ pacing: false }` turns
+per-origin floor (default 3000, 0–60000; omitted, the default floor also
+carries 0–500 ms of jitter — an explicit value is used exactly as given),
+`{ pacing: false }` turns
 cross-run pacing off, and `{ stateDir }` overrides where the state is
 kept (default `$TRAWL_STATE_DIR`, else `${XDG_CACHE_HOME:-~/.cache}/trawl`;
 the older `{ pacingStateDir }` still moves the pacing state alone). A request
@@ -554,6 +562,19 @@ to an origin that is cooling down after a 429/503 rejects with a
 `CooldownError` (exported; `code: "TRAWL_COOLDOWN"`, with `origin`, `until`
 in epoch ms, and `remainingMs`) before any network or browser work;
 `{ ignoreCooldown: true }` overrides it for that call.
+
+On top of pacing, every call counts one attempt per requested origin against
+a rolling hour (60) and a rolling day (200) — the same shared budget the CLI
+and the MCP server draw on through the same state directory. Past either
+limit, `render()` rejects with a `BudgetError` (exported; `code:
+"TRAWL_BUDGET"`, naming `window` (`"hourly"` or `"daily"`), `limit`,
+`nextSlotAt` in epoch ms, and `remainingMs`) before any network or browser
+work — robots.txt included. `{ ignoreBudget: true }` skips the refusal only:
+the attempt is still counted, and cooldowns and pacing are untouched. When
+the budget state itself cannot be recorded (an unwritable directory, a stuck
+lock, a corrupt record), it rejects with `BudgetUnavailableError`
+(`code: "TRAWL_BUDGET_UNAVAILABLE"`) instead — a broken state directory, not
+a spent budget. Non-`http(s)` URLs never touch the budget.
 
 ### As an MCP server
 
@@ -590,8 +611,11 @@ take `0` as Playwright's "no timeout", which would hang a tool call with no way
 to cancel it. Results longer than 100,000 characters are
 truncated with a notice saying so; set `TRAWL_MCP_MAX_CHARS` to change the
 budget. A failed fetch comes back as a tool error — the server keeps serving.
-Tool calls are paced per origin with the default 1000 ms floor, shared with
-any CLI runs through the same state directory (`$TRAWL_STATE_DIR`).
+Tool calls are paced per origin with the default 3000 ms floor and count
+against the same per-origin page budgets (60/rolling hour, 200/rolling day)
+as the CLI and library, shared through the same state directory
+(`$TRAWL_STATE_DIR`); an exhausted budget comes back as a tool error naming
+the window. There is no MCP-level budget override.
 
 ## Why not X?
 
@@ -681,8 +705,11 @@ default rather than asking you to promise you will.
   `max(--min-interval, Crawl-delay)` has passed since the last request *any*
   `trawl` process made to that origin (scheme + host + port; paths don't
   matter, and different origins never wait on each other). The minimum
-  defaults to **1000 ms**; `--min-interval 0` drops the floor but still
-  honors `Crawl-delay`, which is capped at 60s so a `Crawl-delay: 86400`
+  defaults to **3000 ms**, with 0–500 ms of positive jitter added to that
+  default floor (so two callers launched together don't land on the same
+  beat); an explicit `--min-interval` is used exactly as given, and
+  `--min-interval 0` drops the floor (jitter included) but still honors
+  `Crawl-delay`, which is capped at 60s so a `Crawl-delay: 86400`
   can't hang the tool. The last-known `Crawl-delay` is remembered, so the
   next run's `robots.txt` request is paced before the policy is re-read.
   - *What is paced:* the `robots.txt` request, the page navigation, and the
@@ -746,6 +773,33 @@ default rather than asking you to promise you will.
     still apply; `--ignore-robots` and `--no-pacing` do not skip the
     cooldown either. To forget every cooldown, delete the `cooldown/`
     directory.
+- **A rolling page budget caps how much one origin can absorb.** Pacing
+  spaces requests; the budget bounds their number. Every render counts one
+  attempt per requested origin — the `robots.txt` probe, the page, its
+  subresources and the `domcontentloaded` retry all belong to that one
+  attempt, and a failed attempt still counts — against a rolling hour
+  (**60**) and a rolling day (**200**). Past either limit, the call is
+  refused with **exit code 5** before any request is made — `robots.txt`
+  included — naming the exhausted window and when the next slot frees; the
+  budget is shared by the CLI, the library and the MCP server through the
+  same state directory, so switching entry points does not dodge it.
+  - *Where state lives:* beside pacing and cooldown state, in
+    `${XDG_CACHE_HOME:-~/.cache}/trawl/budget/` (or `$TRAWL_STATE_DIR`,
+    library `stateDir`) — one small JSON file per origin (named by a hash
+    of it) holding only admitted-attempt timestamps, pruned to the last 24h
+    and capped at the day limit. No URLs, cookies, credentials, or page
+    content.
+  - *Overriding it:* `--ignore-budget` (library: `ignoreBudget: true`)
+    renders anyway for that one call. The attempt is still counted, and
+    cooldowns and pacing still apply; no pacing or cooldown override
+    (`--no-pacing`, `--ignore-cooldown`, `--ignore-robots`) turns the
+    budget off. The MCP server has no budget override on purpose. To reset
+    an origin's budget, delete its file from `budget/`.
+  - *When the state itself is unusable* (an unwritable directory, a lock
+    busy for more than 5s, a corrupt record), the call is still refused —
+    usage that cannot be recorded must not become an over-budget request —
+    but with a distinct message (and exit code 1) saying the state is
+    unavailable, not that the budget is spent.
 - **It identifies itself**: the default `User-Agent` is
   `trawl/<version> (+https://github.com/rjwalters/trawl)`, so an operator
   reading their logs can see what hit them and block it if they want.

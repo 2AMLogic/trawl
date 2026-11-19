@@ -49,8 +49,11 @@ import {
 export { defaultStateDir, originDigest };
 
 // The documented floor between two requests to one origin when robots.txt
-// asks for nothing (or for less).
-export const DEFAULT_MIN_INTERVAL_MS = 1000;
+// asks for nothing (or for less), and the positive jitter added to that
+// default floor only: an explicit --min-interval / minIntervalMs is used
+// exactly as given.
+export const DEFAULT_MIN_INTERVAL_MS = 3000;
+export const DEFAULT_JITTER_MS = 500;
 
 // The minimum interval shares Crawl-delay's cap, so no configuration can make
 // a single wait unbounded.
@@ -141,7 +144,13 @@ export function parseState(raw) {
 export function createPacer({
 	origin,
 	stateDir = defaultStateDir(),
-	minIntervalMs = DEFAULT_MIN_INTERVAL_MS,
+	// Omitting minIntervalMs uses the default floor AND adds 0–500 ms of
+	// positive jitter (drawn from `random`) to it, so two callers launched
+	// together do not land on the same beat. An explicit value — even the
+	// default number itself — is honoured exactly as given, with no jitter.
+	minIntervalMs,
+	jitterMs = minIntervalMs === undefined ? DEFAULT_JITTER_MS : 0,
+	random = Math.random,
 	now = Date.now,
 	sleep = realSleep,
 	warn = (message) => process.stderr.write(`trawl: ${message}\n`),
@@ -152,7 +161,7 @@ export function createPacer({
 	host = hostname(),
 } = {}) {
 	if (!origin) throw new Error("createPacer requires an origin");
-	const minimum = validateMinInterval(minIntervalMs);
+	const minimum = validateMinInterval(minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS);
 	const dir = path.join(stateDir, "pacing");
 	const digest = originDigest(origin);
 	const statePath = path.join(dir, `${digest}.json`);
@@ -253,7 +262,12 @@ export function createPacer({
 					: null;
 			const delay =
 				fresh ?? (useStoredDelay ? (knownDelay ?? 0) : 0);
-			const required = Math.max(minimum, delay);
+			// The jitter rides on the default floor only, and lowers nothing:
+			// the wait is the larger of (floor + jitter) and the applicable
+			// Crawl-delay, so a larger Crawl-delay still wins outright.
+			const jitter =
+				jitterMs > 0 ? Math.floor(random() * (jitterMs + 1)) : 0;
+			const required = Math.max(minimum + jitter, delay);
 
 			// Re-check the clock after every sleep, but never sleep more than
 			// `required` in total, whatever the clock does meanwhile.

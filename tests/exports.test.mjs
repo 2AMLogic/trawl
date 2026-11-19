@@ -7,6 +7,8 @@ import { test } from "node:test";
 import {
 	AuthWallError,
 	browserWouldReject,
+	BudgetError,
+	BudgetUnavailableError,
 	ClickError,
 	CooldownError,
 	CookieParseError,
@@ -107,12 +109,32 @@ test("includeAuth is what keeps the sign-in cookie a library caller came for", (
 
 test("the existing exports keep working", () => {
 	assert.equal(typeof render, "function");
-	for (const Err of [AuthWallError, ClickError, CooldownError]) {
+	for (const Err of [AuthWallError, BudgetError, BudgetUnavailableError, ClickError, CooldownError]) {
 		assert.equal(typeof Err, "function");
 		assert.ok(Err.prototype instanceof Error);
 	}
 	assert.equal(new AuthWallError([]).name, "AuthWallError");
 	assert.equal(new ClickError("boom", {}).name, "ClickError");
+});
+
+test("the budget errors are importable and distinguishable", () => {
+	assert.equal(new BudgetError({
+		origin: "https://x.test",
+		window: "hourly",
+		limit: 60,
+		now: 1000,
+		nextSlotAt: 2000,
+	}).name, "BudgetError");
+	const un = new BudgetUnavailableError("https://x.test", "/state", "why");
+	assert.equal(un.name, "BudgetUnavailableError");
+	assert.equal(un.code, "TRAWL_BUDGET_UNAVAILABLE");
+	assert.equal(new BudgetError({
+		origin: "https://x.test",
+		window: "daily",
+		limit: 200,
+		now: 1000,
+		nextSlotAt: 2000,
+	}).code, "TRAWL_BUDGET");
 });
 
 test("no new subpath became reachable", async () => {

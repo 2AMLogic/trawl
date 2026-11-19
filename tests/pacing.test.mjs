@@ -18,6 +18,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+	DEFAULT_JITTER_MS,
 	DEFAULT_MIN_INTERVAL_MS,
 	MAX_MIN_INTERVAL_MS,
 	PacingError,
@@ -61,6 +62,9 @@ function pacer(dir, clock, extra = {}) {
 		now: clock.now,
 		sleep: clock.sleep,
 		warn: () => {},
+		// A zero draw keeps the default floor's jitter out of the exact-sleep
+		// assertions below; the jitter tests inject their own random.
+		random: () => 0,
 		...extra,
 	});
 }
@@ -154,12 +158,12 @@ test("different origins never delay each other", async () => {
 test("a larger Crawl-delay beats the minimum, and is remembered for the next run", async () => {
 	const dir = stateDir();
 	const clock = fakeClock();
-	const p = pacer(dir, clock);
+	const p = pacer(dir, clock, { minIntervalMs: 1000 });
 	await p.gate(noop); // robots.txt: nothing known yet
 	await p.gate(noop, { crawlDelayMs: 3000 }); // page, after learning Crawl-delay
 	assert.deepEqual(clock.sleeps, [3000]);
 	// Next run's robots.txt fetch is paced on the stored delay.
-	await pacer(dir, clock).gate(noop);
+	await pacer(dir, clock, { minIntervalMs: 1000 }).gate(noop);
 	assert.deepEqual(clock.sleeps, [3000, 3000]);
 });
 
@@ -201,6 +205,51 @@ test("a zero minimum with no Crawl-delay never waits", async () => {
 	await p.gate(noop);
 	await p.gate(noop);
 	assert.deepEqual(clock.sleeps, []);
+});
+
+// --- the default floor's jitter ---
+
+test("the documented default is a 3s floor with 0-500ms of jitter", () => {
+	assert.equal(DEFAULT_MIN_INTERVAL_MS, 3000);
+	assert.equal(DEFAULT_JITTER_MS, 500);
+});
+
+test("the default floor carries up to DEFAULT_JITTER_MS of positive jitter", async () => {
+	// The first request never waits; the second draws jitter for the wait.
+	const highDir = stateDir();
+	const high = fakeClock();
+	await pacer(highDir, high).gate(noop);
+	await pacer(highDir, high, { random: () => 0.9999 }).gate(noop);
+	assert.deepEqual(high.sleeps, [DEFAULT_MIN_INTERVAL_MS + DEFAULT_JITTER_MS]);
+
+	const midDir = stateDir();
+	const mid = fakeClock();
+	await pacer(midDir, mid).gate(noop);
+	await pacer(midDir, mid, { random: () => 0.5 }).gate(noop);
+	assert.deepEqual(mid.sleeps, [DEFAULT_MIN_INTERVAL_MS + 250]);
+});
+
+test("an explicit minIntervalMs is used exactly as given — no jitter", async () => {
+	const dir = stateDir();
+	const clock = fakeClock();
+	// Even the default number itself, passed explicitly, gets no jitter.
+	await pacer(dir, clock, { minIntervalMs: DEFAULT_MIN_INTERVAL_MS }).gate(noop);
+	await pacer(dir, clock, {
+		minIntervalMs: DEFAULT_MIN_INTERVAL_MS,
+		random: () => 0.9999,
+	}).gate(noop);
+	assert.deepEqual(clock.sleeps, [DEFAULT_MIN_INTERVAL_MS]);
+});
+
+test("jitter never lowers a larger Crawl-delay", async () => {
+	const dir = stateDir();
+	const clock = fakeClock();
+	const p = pacer(dir, clock, { random: () => 0.9999 });
+	await p.gate(noop);
+	// The first request never waits; the second faces floor + jitter (3500)
+	// against the Crawl-delay, and the Crawl-delay wins outright.
+	await p.gate(noop, { crawlDelayMs: 5000 });
+	assert.deepEqual(clock.sleeps, [5000]);
 });
 
 test("useStoredDelay: false (--ignore-robots) paces on the minimum only", async () => {
@@ -324,7 +373,8 @@ test("an unwritable state dir warns once and falls back to in-run pacing", async
 	writeFileSync(notADir, "occupied");
 	const clock = fakeClock();
 	const warnings = [];
-	const p = pacer(notADir, clock, { warn: (m) => warnings.push(m) });
+	// An explicit floor keeps the Crawl-delay dominant in the assertion below.
+	const p = pacer(notADir, clock, { warn: (m) => warnings.push(m), minIntervalMs: 0 });
 	assert.equal(await p.gate(noop), "sent");
 	assert.equal(await p.gate(noop, { crawlDelayMs: 2000 }), "sent");
 	assert.equal(p.degraded, true);
