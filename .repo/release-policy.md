@@ -107,10 +107,15 @@ with these steps:
    the global install is a registry copy, not a link into a checkout:
    `npm i -g @rjwalters/trawl` (see `CLAUDE.md`).
 
+The publish job runs in the protected `npm-publish` environment, so the
+workflow pauses until the owner approves the deployment in GitHub (Actions →
+the run → Review deployments). Approve it, then watch it finish.
+
 **One-time operator setup (owner, npmjs.com):** register the trusted
 publisher for `@rjwalters/trawl` against this repository
-(`2AMLogic/trawl`) and the workflow filename `release.yml`, before the first
-release published this way. Until that is done the workflow's publish fails
+(`2AMLogic/trawl`), the workflow filename `release.yml` and the environment
+`npm-publish`, before the first release published this way:
+`npm trust github @rjwalters/trawl --file release.yml --repo 2AMLogic/trawl --env npm-publish --allow-publish`. Until that is done the workflow's publish fails
 and the **manual fallback** applies — from the tagged tree, not `main`
 (the tag is the verified release revision):
 

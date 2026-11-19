@@ -18,6 +18,13 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    # Protected environment: the run waits for the owner's approval before the
+    # OIDC token is minted, so repository write access alone (including the
+    # Loom fleet's bot) cannot publish. The npm trusted-publisher registration
+    # names this environment, so a job without it is refused by npm.
+    environment:
+      name: npm-publish
+      url: https://www.npmjs.com/package/@rjwalters/trawl
     steps:
       # github.ref is the released tag (vX.Y.Z) on a release event: publish
       # the released tree, not whatever main has moved to since.
