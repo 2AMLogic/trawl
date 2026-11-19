@@ -1,4 +1,4 @@
-// Per-origin cooldowns after 429/503 (src/cooldown.mjs) and their wiring into
+// Per-origin cooldowns after 403/429/503 (src/cooldown.mjs) and their wiring into
 // render(), the CLI and the MCP server.
 //
 // The policy is driven by an injected clock and a temporary state directory;
