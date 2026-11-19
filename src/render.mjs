@@ -528,8 +528,10 @@ export async function render(url, options = {}) {
 	const userAgent = opts.userAgent ?? (await defaultUserAgent());
 
 	// One state directory for everything trawl remembers between runs:
-	// `stateDir`, else the older pacing-only `pacingStateDir`, else
-	// $TRAWL_STATE_DIR / ${XDG_CACHE_HOME:-~/.cache}/trawl.
+	// `stateDir`, else the legacy `pacingStateDir` — a stand-in for the
+	// whole directory when `stateDir` is absent (the pacer alone honours it
+	// separately, below) — else $TRAWL_STATE_DIR /
+	// ${XDG_CACHE_HOME:-~/.cache}/trawl.
 	const stateDir =
 		opts.stateDir ?? opts.pacingStateDir ?? defaultStateDir();
 

@@ -11,6 +11,8 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	rmdirSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -162,16 +164,101 @@ test("an exhausted day is refused naming the day, with 59 in the hour left", asy
 	);
 });
 
-test("the hour is checked first when both windows are exhausted", async () => {
+test("with both windows exhausted, the later-freeing one is reported", async () => {
 	const dir = freshDir();
 	const c = clock();
 	const s = store(dir, c);
-	// 200 attempts all inside the last hour.
-	seed(s, ORIGIN, Array.from({ length: DAILY_BUDGET }, (_, i) => 1000 * i));
+	// 200 attempts all inside the last hour: the hour frees a slot at
+	// +62min, but the day stays spent until the oldest attempt is 24h gone —
+	// the day is the limiting window and must be named, even though the hour
+	// is the first found over budget.
+	const stamped = seed(s, ORIGIN, Array.from({ length: DAILY_BUDGET }, (_, i) => 1000 * i));
 	await assert.rejects(
 		() => s.reserve(ORIGIN),
-		(err) => err instanceof BudgetError && err.window === "hourly",
+		(err) => {
+			assert.ok(err instanceof BudgetError);
+			assert.equal(err.window, "daily");
+			assert.equal(err.nextSlotAt, stamped[0] + DAILY_WINDOW_MS);
+			return true;
+		},
 	);
+	// A normal attempt fits at the advertised instant: the day is down to
+	// 199 in-window entries, and only the new attempt joins them.
+	c.t = stamped[0] + DAILY_WINDOW_MS;
+	await s.reserve(ORIGIN);
+	const attempts = readAttempts(s, ORIGIN);
+	assert.equal(attempts.length, DAILY_BUDGET);
+	assert.equal(attempts[attempts.length - 1], c.t);
+});
+
+test("an override-inflated hour frees at its 61st-oldest entry, not its oldest", async () => {
+	const dir = freshDir();
+	const c = clock();
+	const s = store(dir, c);
+	// One attempt 30 minutes back, then 60 stacked on now (the
+	// --ignore-budget shape): the hour holds 61, so waiting out the oldest
+	// (at +30min) still leaves a full hour's worth. The first normal slot
+	// is when 59 of the stacked batch remain, at +60min from now.
+	seed(s, ORIGIN, [30 * 60 * 1000, ...Array(HOURLY_BUDGET).fill(0)]);
+	await assert.rejects(
+		() => s.reserve(ORIGIN),
+		(err) => {
+			assert.ok(err instanceof BudgetError);
+			assert.equal(err.window, "hourly");
+			assert.equal(err.nextSlotAt, T0 + HOURLY_WINDOW_MS);
+			assert.equal(err.remainingMs, HOURLY_WINDOW_MS);
+			return true;
+		},
+	);
+	// At the oldest entry's own rollout (+30min) the hour is still spent.
+	c.advance(30 * 60 * 1000);
+	await assert.rejects(() => s.reserve(ORIGIN), BudgetError);
+	// At the advertised instant the attempt is admitted, alone in its hour.
+	c.advance(HOURLY_WINDOW_MS - 30 * 60 * 1000);
+	await s.reserve(ORIGIN);
+	const inHour = readAttempts(s, ORIGIN).filter((a) => a > c.t - HOURLY_WINDOW_MS);
+	assert.deepEqual(inHour, [c.t]);
+});
+
+test("a spent day keeps the wait honest even when the hour frees sooner", async () => {
+	const dir = freshDir();
+	const c = clock();
+	const s = store(dir, c);
+	// 50, 50, 40 and 60 reservations at hours −4, −3, −2 and 0: the hour
+	// rolls free at +1h, but the day only drops to 199 at +20h, when the
+	// −4h batch leaves the 24h window. Refusals must name the day and
+	// advertise that instant — retrying at the hour's own slot still fails.
+	const HOUR = HOURLY_WINDOW_MS;
+	seed(s, ORIGIN, [
+		...Array(50).fill(4 * HOUR),
+		...Array(50).fill(3 * HOUR),
+		...Array(40).fill(2 * HOUR),
+		...Array(HOURLY_BUDGET).fill(0),
+	]);
+	await assert.rejects(
+		() => s.reserve(ORIGIN),
+		(err) => {
+			assert.ok(err instanceof BudgetError);
+			assert.equal(err.window, "daily");
+			assert.equal(err.limit, DAILY_BUDGET);
+			assert.equal(err.nextSlotAt, T0 + 20 * HOUR);
+			assert.equal(err.remainingMs, 20 * HOUR);
+			return true;
+		},
+	);
+	// The hour's own slot at +1h is not enough while the day is spent.
+	c.advance(HOUR);
+	await assert.rejects(
+		() => s.reserve(ORIGIN),
+		(err) => err instanceof BudgetError && err.window === "daily",
+	);
+	// At the advertised instant the attempt is admitted.
+	c.advance(19 * HOUR);
+	await s.reserve(ORIGIN);
+	const attempts = readAttempts(s, ORIGIN);
+	assert.equal(attempts[attempts.length - 1], c.t);
+	// The aged-out −4h batch left the record: 150 survivors plus the new one.
+	assert.equal(attempts.length, DAILY_BUDGET - 50 + 1);
 });
 
 test("the 200th daily read admits; only the 201st is refused", async () => {
@@ -331,6 +418,47 @@ test("a stuck lock is unavailable state, and refuses", async () => {
 			return true;
 		},
 	);
+});
+
+test("a failed write after the lock is unavailable state, not a raw fs error", async () => {
+	const dir = freshDir();
+	const c = clock();
+	const s = store(dir, c);
+	mkdirSync(s.dir, { recursive: true });
+	const statePath = s.statePathFor(ORIGIN);
+	writeFileSync(statePath, JSON.stringify({ version: 1, attempts: [] }));
+	// Fail the write while the lock is held and the record has been read:
+	// on this clean path the injected clock's third call inside reserve() is
+	// the count taken between read and write, so swapping the record for a
+	// directory there makes the atomic rename fail (EISDIR) — the shape of
+	// an ENOSPC/EIO failure mid-write.
+	let calls = 0;
+	const broken = createBudgetStore({
+		stateDir: dir,
+		sleep: c.sleep,
+		now: () => {
+			if (++calls === 3) {
+				unlinkSync(statePath);
+				mkdirSync(statePath);
+			}
+			return c.t;
+		},
+	});
+	await assert.rejects(
+		() => broken.reserve(ORIGIN),
+		(err) => {
+			assert.ok(err instanceof BudgetUnavailableError);
+			assert.equal(err.code, "TRAWL_BUDGET_UNAVAILABLE");
+			assert.match(err.message, /could not be recorded/);
+			assert.doesNotMatch(err.message, /used its .* budget/);
+			return true;
+		},
+	);
+	// The lock was still released (the finally), so a repaired directory
+	// reserves again immediately instead of waiting out a stuck lock.
+	rmdirSync(statePath);
+	await s.reserve(ORIGIN);
+	assert.deepEqual(readAttempts(s, ORIGIN), [c.t]);
 });
 
 test("an unusable state directory is unavailable state, and refuses", async () => {

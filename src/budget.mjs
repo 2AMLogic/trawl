@@ -71,9 +71,10 @@ const ABSENT = new Set(["ENOENT", "ENOTDIR"]);
 // The largest instant a JavaScript Date can represent.
 const MAX_TIME_MS = 8.64e15;
 
-// Raised when every slot in a window is used up. `window` names which one
-// ("hourly" or "daily"), and `nextSlotAt` (epoch ms) is when the oldest
-// in-window attempt rolls out and a slot frees.
+// Raised when every slot in a window is used up. `window` names the one
+// blocking longest ("hourly" or "daily"), and `nextSlotAt` (epoch ms) is
+// the first instant a normal attempt is admitted — both windows are back
+// under their limits then.
 export class BudgetError extends Error {
 	constructor({ origin, window, limit, now, nextSlotAt }) {
 		const span = window === "hourly" ? "hour" : "24 hours";
@@ -220,23 +221,37 @@ export function createBudgetStore({
 			const attempts = record.attempts.filter((a) => a > t - DAILY_WINDOW_MS);
 			const hourly = attempts.filter((a) => a > t - HOURLY_WINDOW_MS);
 			if (enforce) {
+				// An attempt is admitted only when BOTH windows are under
+				// their limits, so the refusal names the window that blocks
+				// longest — not merely the first one found over budget. A
+				// window frees when enough of its oldest entries have rolled
+				// out that the count drops below the cap; for a window
+				// inflated past the cap by --ignore-budget that is later
+				// than just waiting out its oldest entry.
+				let blocked = null;
 				if (hourly.length >= HOURLY_BUDGET) {
-					throw new BudgetError({
-						origin,
+					blocked = {
 						window: "hourly",
 						limit: HOURLY_BUDGET,
-						now: t,
-						nextSlotAt: hourly[0] + HOURLY_WINDOW_MS,
-					});
+						nextSlotAt:
+							hourly[hourly.length - HOURLY_BUDGET] +
+							HOURLY_WINDOW_MS,
+					};
 				}
 				if (attempts.length >= DAILY_BUDGET) {
-					throw new BudgetError({
-						origin,
+					const daily = {
 						window: "daily",
 						limit: DAILY_BUDGET,
-						now: t,
-						nextSlotAt: attempts[0] + DAILY_WINDOW_MS,
-					});
+						nextSlotAt:
+							attempts[attempts.length - DAILY_BUDGET] +
+							DAILY_WINDOW_MS,
+					};
+					if (!blocked || daily.nextSlotAt > blocked.nextSlotAt) {
+						blocked = daily;
+					}
+				}
+				if (blocked) {
+					throw new BudgetError({ origin, now: t, ...blocked });
 				}
 			}
 			// Bounded retention: nothing older than a day, at most the day cap
@@ -244,7 +259,18 @@ export function createBudgetStore({
 			const kept = [...attempts, t]
 				.sort((a, b) => a - b)
 				.slice(-DAILY_BUDGET);
-			writeJsonAtomic(statePath, { version: STATE_VERSION, attempts: kept });
+			try {
+				writeJsonAtomic(statePath, {
+					version: STATE_VERSION,
+					attempts: kept,
+				});
+			} catch (err) {
+				// A record that cannot be written is the same unavailable
+				// state as one that cannot be read: refuse rather than let
+				// the attempt go uncounted, and surface the documented
+				// TRAWL_BUDGET_UNAVAILABLE code, not a raw filesystem error.
+				throw unavailable(origin, err);
+			}
 		} finally {
 			release();
 		}

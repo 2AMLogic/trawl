@@ -556,8 +556,13 @@ per-origin floor (default 3000, 0–60000; omitted, the default floor also
 carries 0–500 ms of jitter — an explicit value is used exactly as given),
 `{ pacing: false }` turns
 cross-run pacing off, and `{ stateDir }` overrides where the state is
-kept (default `$TRAWL_STATE_DIR`, else `${XDG_CACHE_HOME:-~/.cache}/trawl`;
-the older `{ pacingStateDir }` still moves the pacing state alone). A request
+kept (default `$TRAWL_STATE_DIR`, else `${XDG_CACHE_HOME:-~/.cache}/trawl`).
+The older `{ pacingStateDir }` is a fallback for that same directory when
+`{ stateDir }` is not given — cooldowns and the page budget live there too,
+so given alone it does not move the pacing state alone. To keep the pacing
+state separate from the budget and cooldown state (for instance to share
+the CLI/MCP budget), pass both: `{ stateDir }` selects the shared directory
+and `{ pacingStateDir }` then moves only the pacing files. A request
 to an origin that is cooling down after a 429/503 rejects with a
 `CooldownError` (exported; `code: "TRAWL_COOLDOWN"`, with `origin`, `until`
 in epoch ms, and `remainingMs`) before any network or browser work;
@@ -569,7 +574,10 @@ and the MCP server draw on through the same state directory. Past either
 limit, `render()` rejects with a `BudgetError` (exported; `code:
 "TRAWL_BUDGET"`, naming `window` (`"hourly"` or `"daily"`), `limit`,
 `nextSlotAt` in epoch ms, and `remainingMs`) before any network or browser
-work — robots.txt included. `{ ignoreBudget: true }` skips the refusal only:
+work — robots.txt included. `window` names the window blocking longest and
+`nextSlotAt` the first instant both windows are back under their limits, so
+a normal retry exactly then is admitted. `{ ignoreBudget: true }` skips the
+refusal only:
 the attempt is still counted, and cooldowns and pacing are untouched. When
 the budget state itself cannot be recorded (an unwritable directory, a stuck
 lock, a corrupt record), it rejects with `BudgetUnavailableError`
