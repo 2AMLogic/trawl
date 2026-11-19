@@ -197,7 +197,7 @@ test("a wildcard rule's denial message still quotes the matched rule line", () =
 	assert.equal(
 		robotsDenialMessage(result),
 		"robots.txt disallows this path (Disallow: /*.pdf$). " +
-			"Use --ignore-robots to override.",
+			"Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.",
 	);
 });
 
@@ -566,7 +566,7 @@ test("a fetch failure inside the gate is still a network-error verdict", async (
 test("a matched-rule denial keeps the existing wording", () => {
 	assert.equal(
 		robotsDenialMessage({ allowed: false, rule: "Disallow: /x" }),
-		"robots.txt disallows this path (Disallow: /x). Use --ignore-robots to override.",
+		"robots.txt disallows this path (Disallow: /x). Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.",
 	);
 });
 
@@ -589,7 +589,7 @@ test("each retrieval failure names robots.txt, its cause, cookies, and the overr
 		assert.match(message, cause);
 		assert.doesNotMatch(message, /disallows this path/);
 		assert.match(message, /no browser-profile cookies/);
-		assert.match(message, /Use --ignore-robots to override\.$/);
+		assert.match(message, /Refused because strict robots mode is on \(--respect-robots, respectRobots, respect_robots\); leave it off to read the page anyway\.$/);
 	}
 });
 
@@ -631,7 +631,7 @@ test("a cookie never reaches the verdict or the denial message", async () => {
 		assert.ok(!JSON.stringify(v).includes(secret));
 		assert.ok(!message.includes(secret), message);
 		assert.doesNotMatch(message, /no browser-profile cookies/);
-		assert.match(message, /^robots\.txt is unreachable: .*Use --ignore-robots to override\.$/);
+		assert.match(message, /^robots\.txt is unreachable: .*Refused because strict robots mode is on \(--respect-robots, respectRobots, respect_robots\); leave it off to read the page anyway\.$/);
 	}
 });
 
@@ -667,7 +667,7 @@ test("without sentCookies the cookie note is kept verbatim", () => {
 	assert.equal(robotsDenialMessage(verdict), robotsDenialMessage(verdict, { sentCookies: false }));
 	assert.equal(
 		robotsDenialMessage(verdict, { sentCookies: true }),
-		"robots.txt is unreachable: https://e.com/robots.txt returned HTTP 503 (server error). RFC 9309 treats an unreachable robots.txt as disallowing the whole site. Use --ignore-robots to override.",
+		"robots.txt is unreachable: https://e.com/robots.txt returned HTTP 503 (server error). RFC 9309 treats an unreachable robots.txt as disallowing the whole site. Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.",
 	);
 });
 
@@ -806,18 +806,18 @@ test("the plain-path cookie note is byte-identical; --profile gets its own fixed
 	const head = "robots.txt is unreachable: https://e.com/robots.txt returned HTTP 503 (server error). RFC 9309 treats an unreachable robots.txt as disallowing the whole site. ";
 	assert.equal(
 		robotsDenialMessage(verdict),
-		`${head}The robots.txt request sends no browser-profile cookies, so a cookie-gated robots.txt can fail here even when the page itself would load. Use --ignore-robots to override.`,
+		`${head}The robots.txt request sends no browser-profile cookies, so a cookie-gated robots.txt can fail here even when the page itself would load. Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.`,
 	);
 	assert.equal(
 		robotsDenialMessage(verdict, { profile: true }),
-		`${head}No cookie from the profile matched robots.txt, so the request carried none, and a cookie-gated robots.txt can fail here even when the page itself would load. Use --ignore-robots to override.`,
+		`${head}No cookie from the profile matched robots.txt, so the request carried none, and a cookie-gated robots.txt can fail here even when the page itself would load. Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.`,
 	);
 	// With cookies sent there is no note on either path.
-	assert.equal(robotsDenialMessage(verdict, { sentCookies: true, profile: true }), `${head}Use --ignore-robots to override.`);
+	assert.equal(robotsDenialMessage(verdict, { sentCookies: true, profile: true }), `${head}Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.`);
 	// A matched rule never had a note.
 	assert.equal(
 		robotsDenialMessage({ allowed: false, rule: "Disallow: /" }, { profile: true }),
-		"robots.txt disallows this path (Disallow: /). Use --ignore-robots to override.",
+		"robots.txt disallows this path (Disallow: /). Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.",
 	);
 });
 
@@ -871,7 +871,7 @@ test("a cookie-carrying robots.txt redirected to another origin is refused with 
 		const message = robotsDenialMessage(v, { sentCookies: true });
 		assert.equal(
 			message,
-			`robots.txt is unreachable: ${rig.a}/robots.txt returned HTTP 503 (server error). RFC 9309 treats an unreachable robots.txt as disallowing the whole site. ${REDIRECT_HINT}Use --ignore-robots to override.`,
+			`robots.txt is unreachable: ${rig.a}/robots.txt returned HTTP 503 (server error). RFC 9309 treats an unreachable robots.txt as disallowing the whole site. ${REDIRECT_HINT}Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.`,
 		);
 		// Fixed text: the final URL is not named.
 		assert.ok(!message.includes(rig.b), message);
@@ -897,7 +897,7 @@ test("a matched-rule denial after a cross-origin redirect carries no hint", asyn
 		assert.equal(v.crossOriginRedirect, true);
 		assert.equal(
 			robotsDenialMessage(v, { sentCookies: true }),
-			"robots.txt disallows this path (Disallow: /). Use --ignore-robots to override.",
+			"robots.txt disallows this path (Disallow: /). Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.",
 		);
 	} finally {
 		await rig.close();

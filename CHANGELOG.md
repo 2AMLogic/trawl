@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`robots.txt` is advisory by default (#143, #140).** A single-page read
+  now proceeds when `robots.txt` disallows the path or cannot be fetched
+  (5xx, network error, timeout); a matching group's `Crawl-delay` still
+  paces it. `--respect-robots` (library `respectRobots: true`, MCP
+  `respect_robots`) restores the old refusal as an opt-in strict mode.
+  `--ignore-robots` / `ignoreRobots` are kept as no-ops and no longer skip
+  the `robots.txt` request. `CLAUDE.md` and `AGENTS.md` now record the design
+  rule, and a named test asserts a `Disallow: /` origin is fetched by default.
+
 ### Added
 
 - **Load controls on the MCP tools.** `fetch_page` and `fetch_links` now

@@ -107,7 +107,10 @@ Options:
       --screenshot <file>  Also write a PNG screenshot to this path
       --full-page          Screenshot the whole scroll height
       --viewport <WxH>     Viewport size, e.g. 1280x800     (default: 1280x2000)
-      --ignore-robots      Skip the robots.txt check (not --min-interval)
+      --respect-robots     Refuse the read if robots.txt disallows the path or
+                            cannot be fetched. Default: robots.txt is advisory
+                            (its Crawl-delay still applies)
+      --ignore-robots      Accepted for compatibility; does nothing
       --min-interval <ms>  Minimum gap between requests to one origin,
                             across separate runs; Crawl-delay still wins if
                             larger. 0 drops the floor only. Max ${MAX_MIN_INTERVAL_MS}.
@@ -118,7 +121,7 @@ Options:
                             \${XDG_CACHE_HOME:-~/.cache}/trawl
       --ignore-cooldown    Fetch even if the origin is cooling down after a
                             429/503 (see exit code 4). Bypasses the refusal
-                            only: robots.txt and pacing still apply, and a
+                            only: pacing and any Crawl-delay still apply, and a
                             new 429/503 is still recorded.
       --profile <dir>      Persistent browser profile dir (cookies/
                             localStorage survive across runs); also read from
@@ -281,6 +284,7 @@ export function parseArgs(argv) {
 			arg === "--har-redact" ||
 			arg === "--full-page" ||
 			arg === "--ignore-robots" ||
+			arg === "--respect-robots" ||
 			arg === "--no-readability" ||
 			arg === "--no-auth-check" ||
 			arg === "--no-pacing" ||
@@ -401,6 +405,7 @@ export async function main(argv, deps = {}) {
 		screenshot: args["--screenshot"],
 		fullPage: !!args["--full-page"],
 		ignoreRobots: args["--ignore-robots"] === true,
+		respectRobots: args["--respect-robots"] === true,
 		// Deliberately NOT defaulted the way `trawl login`'s profile dir is
 		// (#24): a plain fetch stays ephemeral-by-default (render.mjs's own
 		// documented isolation guarantee — nothing one run does is visible to
@@ -522,7 +527,6 @@ function loadFetchCookies(args, { profileDir, stderr }) {
 // fetched. Today `browserWouldReject` already skips every such cookie, so
 // this only speaks up should the two rules ever drift apart.
 function robotsOmitted(args, cookies) {
-	if (args["--ignore-robots"] === true) return [];
 	let target;
 	try {
 		target = new URL(args._[0]);

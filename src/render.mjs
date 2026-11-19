@@ -552,12 +552,16 @@ export async function render(url, options = {}) {
 	// this run's robots.txt. `undefined` until (unless) robots.txt is fetched.
 	let navCrawlDelayMs;
 
-	// Etiquette, enforced rather than promised: consult robots.txt before we
-	// touch the page at all. Skipped for non-http(s) URLs and when the caller
-	// opts out with `ignoreRobots` (which skips the robots request itself, so
-	// an unreachable robots.txt cannot block an explicit override either). A
-	// 5xx, network error, or timeout is a full disallow (RFC 9309 §2.3.1.4)
-	// and is reported as such rather than as a matched rule.
+	// robots.txt is advisory by default (#140, #143): trawl does not gate a
+	// user-directed read of one page. We still consult it for http(s) URLs, so
+	// a matching group's `Crawl-delay` paces the read, but a matching
+	// `Disallow` or an unreachable robots.txt (5xx, network error, timeout,
+	// RFC 9309 §2.3.1.4) does not stop it. `respectRobots: true` is the strict
+	// opt-in: either of those refuses the read before any page navigation.
+	// `ignoreRobots` is accepted and does nothing (including next to
+	// `respectRobots`, which still means strict); it used to skip the request.
+	// Errors from the pacing and cooldown gates propagate in both modes: they
+	// are thrown by their own gates, outside the verdict branch below.
 	//
 	// Which cookies the request carries depends on the path (#79):
 	//   - no cookies, no profile: none; Node fetch, before any browser work.
@@ -570,7 +574,8 @@ export async function render(url, options = {}) {
 	// Either way the header is trawl's, not the browser's: a cross-origin
 	// redirect drops it (Node fetch), a `Set-Cookie` on the robots.txt
 	// response is not stored, and the request is not in a `--har`.
-	const robotsCheck = !opts.ignoreRobots && isHttpUrl(url);
+	const strictRobots = opts.respectRobots === true;
+	const robotsCheck = isHttpUrl(url);
 	const robotsViaProfile = robotsCheck && Boolean(opts.profileDir);
 	const checkRobots = async ({ fetch, cookie, sentCookies, profile = false }) => {
 		const verdict = await checkRobotsAllowed(url, {
@@ -595,9 +600,13 @@ export async function render(url, options = {}) {
 				gate: (start) => pacer.gate(start, { admit: () => admit() }),
 			}),
 		});
-		if (!verdict.allowed) {
+		if (!verdict.allowed && strictRobots) {
 			throw new Error(robotsDenialMessage(verdict, { sentCookies, profile }));
 		}
+		// An unretrieved robots.txt (`failure`) taught us no policy: keep the
+		// delay an earlier run stored. A retrieved one, a matching Disallow
+		// included, carries its group's Crawl-delay, which still applies.
+		if (verdict.failure) return;
 		navCrawlDelayMs = crawlDelayMs(verdict.crawlDelay);
 		// Without pacing, honoring `Crawl-delay` means spacing the two requests
 		// this run makes — robots.txt, then the page. With pacing, the gate in
@@ -617,13 +626,13 @@ export async function render(url, options = {}) {
 		await checkRobots({ fetch: opts.fetch, cookie, sentCookies: Boolean(cookie) });
 	}
 
-	// Under --ignore-robots there is no policy to honour, stored or fresh —
-	// only the minimum interval. Read when navigating, since on the
-	// `profileDir` path robots.txt is only fetched after the launch.
+	// A Crawl-delay learned this run, else the one an earlier run stored.
+	// Read when navigating, since on the `profileDir` path robots.txt is only
+	// fetched after the launch.
 	const navPolicy = () =>
 		navCrawlDelayMs !== undefined
 			? { crawlDelayMs: navCrawlDelayMs }
-			: { useStoredDelay: !opts.ignoreRobots };
+			: { useStoredDelay: true };
 	// Each explicit page request re-checks the cooldown last thing before it
 	// is sent (after any pacing wait). For the networkidle-fallback retry this
 	// is what stops a retry straight into the 429/503 the first attempt saw.

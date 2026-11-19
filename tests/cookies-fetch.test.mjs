@@ -441,6 +441,10 @@ async function renderProfile({ onFetch, jar, extra = {} } = {}) {
 			fetch,
 			profileDir: join(dir, "p"),
 			userAgent: "trawl/9.9.9 (+test)",
+			// Strict by default here: most tests in this file are about the
+			// refusal's wording and what it leaks. Pass `respectRobots: false`
+			// in `extra` for the advisory default.
+			respectRobots: true,
 			...extra,
 		});
 		return { result: await result.then((r) => ({ r }), (e) => ({ e })), events, fetchCalls };
@@ -506,7 +510,7 @@ test("profileDir: a disallow closes the context and never opens a page", async (
 	const { result, events } = await renderProfile({
 		onFetch: () => robotsResponse(200, "User-agent: *\nDisallow: /\n"),
 	});
-	assert.equal(result.e?.message, "robots.txt disallows this path (Disallow: /). Use --ignore-robots to override.");
+	assert.equal(result.e?.message, "robots.txt disallows this path (Disallow: /). Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.");
 	assert.deepEqual(events, [
 		"launchPersistentContext",
 		["cookies", "http://127.0.0.1:1/robots.txt"],
@@ -569,7 +573,7 @@ test("profileDir: an unreachable robots.txt is refused, naming no cookie", async
 		assert.match(result.e.message, /^robots\.txt is unreachable: (reading the body of )?http:\/\/127\.0\.0\.1:1\/robots\.txt /);
 		assert.match(result.e.message, cause);
 		assert.doesNotMatch(result.e.message, /browser-profile cookies|No cookie from the profile/);
-		assert.match(result.e.message, /Use --ignore-robots to override\.$/);
+		assert.match(result.e.message, /Refused because strict robots mode is on \(--respect-robots, respectRobots, respect_robots\); leave it off to read the page anyway\.$/);
 		assert.equal(result.e.cause, undefined);
 		assert.ok(events.includes("context.close") && !events.includes("newPage") && !events.includes("goto"));
 	}
@@ -581,7 +585,7 @@ test("profileDir: no matching jar cookie gets the profile's own note, not the pl
 		assert.equal(fetchCalls[0][1].headers.Cookie, undefined);
 		assert.equal(
 			result.e?.message,
-			"robots.txt is unreachable: http://127.0.0.1:1/robots.txt returned HTTP 503 (server error). RFC 9309 treats an unreachable robots.txt as disallowing the whole site. No cookie from the profile matched robots.txt, so the request carried none, and a cookie-gated robots.txt can fail here even when the page itself would load. Use --ignore-robots to override.",
+			"robots.txt is unreachable: http://127.0.0.1:1/robots.txt returned HTTP 503 (server error). RFC 9309 treats an unreachable robots.txt as disallowing the whole site. No cookie from the profile matched robots.txt, so the request carried none, and a cookie-gated robots.txt can fail here even when the page itself would load. Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.",
 		);
 	}
 });
@@ -627,7 +631,7 @@ test("profileDir: a cross-origin robots.txt redirect after sending cookies gets 
 	const { result } = await renderProfile({ onFetch: redirected, jar: [jarCookie("k", AWKWARD)] });
 	assert.equal(
 		result.e?.message,
-		"robots.txt is unreachable: http://127.0.0.1:1/robots.txt returned HTTP 503 (server error). RFC 9309 treats an unreachable robots.txt as disallowing the whole site. The robots.txt request was redirected to another origin, and cookies are not sent across a cross-origin redirect, so a cookie-gated robots.txt there was requested without them. Use --ignore-robots to override.",
+		"robots.txt is unreachable: http://127.0.0.1:1/robots.txt returned HTTP 503 (server error). RFC 9309 treats an unreachable robots.txt as disallowing the whole site. The robots.txt request was redirected to another origin, and cookies are not sent across a cross-origin redirect, so a cookie-gated robots.txt there was requested without them. Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.",
 	);
 	assertNoValue(errorText(result.e));
 	// No cookie sent: nothing was dropped, so no hint.
@@ -667,16 +671,34 @@ test("profileDir: a cooldown seen at the robots gate closes the context", async 
 	}
 });
 
-test("profileDir with ignoreRobots makes no robots request", async () => {
+test("profileDir with ignoreRobots still requests robots.txt: the option is a no-op", async () => {
 	const { result, events, fetchCalls } = await renderProfile({
-		onFetch: () => {
-			throw new Error("no robots request expected");
-		},
-		extra: { ignoreRobots: true },
+		onFetch: () => robotsResponse(200),
+		extra: { ignoreRobots: true, respectRobots: false },
 	});
-	assert.equal(result.e, undefined);
-	assert.equal(fetchCalls.length, 0);
-	assert.deepEqual(events, ["launchPersistentContext", "newPage", "goto", "context.close"]);
+	assert.equal(result.e, undefined, result.e?.stack);
+	assert.equal(fetchCalls.length, 1);
+	assert.deepEqual(events, [
+		"launchPersistentContext",
+		["cookies", "http://127.0.0.1:1/robots.txt"],
+		["fetch", "http://127.0.0.1:1/robots.txt"],
+		"newPage",
+		"goto",
+		"context.close",
+	]);
+});
+
+test("profileDir: by default an unreachable robots.txt does not stop the page; strict mode does", async () => {
+	const advisory = await renderProfile({
+		onFetch: () => robotsResponse(503),
+		extra: { respectRobots: false },
+	});
+	assert.equal(advisory.result.e, undefined, advisory.result.e?.stack);
+	assert.deepEqual(advisory.events.slice(-3), ["newPage", "goto", "context.close"]);
+
+	const strict = await renderProfile({ onFetch: () => robotsResponse(503) });
+	assert.match(strict.result.e?.message ?? "", /robots\.txt is unreachable/);
+	assert.ok(!strict.events.includes("newPage"));
 });
 
 // #89: a non-ASCII cookie value reaches robots.txt as the same UTF-8 bytes the
@@ -835,7 +857,7 @@ function filesUnder(root) {
 }
 
 // #79 end to end: a robots.txt that answers 503 unless the site's own cookie
-// comes with it, fetched without --ignore-robots via --cookies and via an
+// comes with it, fetched in strict mode (--respect-robots) via --cookies and via an
 // imported --profile, through a symlinked bin and a real browser.
 test("a cookie-gated robots.txt lets the fetch through with --cookies or an imported --profile", browserOpts, async () => {
 	const dir = tempDir();
@@ -872,13 +894,13 @@ test("a cookie-gated robots.txt lets the fetch through with --cookies or an impo
 	);
 	try {
 		// (a) No cookie: refused, as before.
-		const plain = await runBin(link, [`${origin}/`, ...common], env);
+		const plain = await runBin(link, [`${origin}/`, "--respect-robots", ...common], env);
 		assert.equal(plain.code, 1, plain.stderr);
 		assert.match(plain.stderr, /robots\.txt is unreachable: .* returned HTTP 503 \(server error\)\..*no browser-profile cookies/);
 		assert.deepEqual(robots.at(-1).cookie, "");
 
 		// (b) --cookies: only the matching cookie goes to robots.txt.
-		const viaCookies = await runBin(link, [`${origin}/`, "--cookies", file, ...common], env);
+		const viaCookies = await runBin(link, [`${origin}/`, "--respect-robots", "--cookies", file, ...common], env);
 		assert.equal(viaCookies.code, 0, viaCookies.stderr);
 		// (Chromium treats 127.0.0.1 as secure, so the page also gets `sec`;
 		// trawl's own robots request applies the plain http rule and does not.)
@@ -893,7 +915,7 @@ test("a cookie-gated robots.txt lets the fetch through with --cookies or an impo
 		assert.equal(imported.code, 0, imported.stderr);
 		const har = join(dir, "trace.har");
 		const before = robots.length;
-		const viaProfile = await runBin(link, [`${origin}/`, "--profile", profile, "--har", har, ...common], env);
+		const viaProfile = await runBin(link, [`${origin}/`, "--respect-robots", "--profile", profile, "--har", har, ...common], env);
 		assert.equal(viaProfile.code, 0, viaProfile.stderr);
 		assert.match(viaProfile.stdout, /cookie=\[gate=open[;\]]/);
 		assert.equal(robots.length, before + 1);
@@ -1014,7 +1036,7 @@ test("render(): an injected fetch whose error quotes the Cookie header leaks non
 			sent = init.headers.Cookie;
 			throw make(sent);
 		};
-		const err = await render("http://127.0.0.1:1/page", { ...LIB, browserType, cookies, fetch }).catch((e) => e);
+		const err = await render("http://127.0.0.1:1/page", { ...LIB, browserType, cookies, fetch, respectRobots: true }).catch((e) => e);
 		assert.ok(sent?.includes(AWKWARD), "the header was sent");
 		assert.match(err.message, /^robots\.txt is unreachable: http:\/\/127\.0\.0\.1:1\/robots\.txt could not be fetched \(network error: (request failed|ECONNREFUSED)\)\./);
 		assert.equal(err.cause, undefined);
@@ -1036,7 +1058,7 @@ test("CLI: a robots.txt failure with cookies sent prints no cookie content", asy
 				["127.0.0.1", "FALSE", "/", "FALSE", String(FUTURE), "awk", AWKWARD],
 			]),
 		);
-		const r = await runCli([`${srv.origin}/`, "--cookies", file, "-S", "--no-pacing"], { TRAWL_PROFILE_DIR: "" });
+		const r = await runCli([`${srv.origin}/`, "--respect-robots", "--cookies", file, "-S", "--no-pacing"], { TRAWL_PROFILE_DIR: "" });
 		assert.equal(r.code, 1, r.stderr);
 		assert.match(r.stderr, /robots\.txt is unreachable: .* could not be fetched \(network error: ([A-Z_]+|request failed)\)\./);
 		assertNoValue([r.stdout, r.stderr]);
@@ -1194,20 +1216,21 @@ test("profileDir: a third-party partitioned cookie is not sent to robots.txt (ht
 		const browserSends = await seedPartitionedProfile(rig, profile);
 		assert.deepEqual(browserSends, ["ownpart=O", "unpart=U"]);
 		// Node fetch would refuse the self-signed certificate, so the robots
-		// request is captured by an injected fetch; it disallows, so render()
-		// stops before the page (which would need ignoreHTTPSErrors).
+		// request is captured by an injected fetch; it disallows and strict mode is
+		// on, so render() stops before the page (which would need ignoreHTTPSErrors).
 		const sent = [];
 		const err = await render(`${rig.origin}/page`, {
 			format: "title",
 			pacing: false,
 			authCheck: false,
 			profileDir: profile,
+			respectRobots: true,
 			fetch: async (url, init) => {
 				sent.push([url, init.headers.Cookie]);
 				return robotsResponse(200, "User-agent: *\nDisallow: /\n");
 			},
 		}).catch((e) => e);
-		assert.equal(err?.message, "robots.txt disallows this path (Disallow: /). Use --ignore-robots to override.");
+		assert.equal(err?.message, "robots.txt disallows this path (Disallow: /). Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.");
 		assert.equal(sent.length, 1);
 		assert.equal(sent[0][0], `${rig.origin}/robots.txt`);
 		assert.deepEqual(sent[0][1].split("; ").sort(), browserSends);

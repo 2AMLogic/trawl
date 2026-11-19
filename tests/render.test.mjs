@@ -458,10 +458,10 @@ test("still writes a valid HAR when navigation throws", opts, async () => {
 	await server.close();
 
 	const file = harPath();
-	// ignoreRobots: the refused robots.txt fetch would otherwise be a full
-	// disallow (RFC 9309 §2.3.1.4) and stop us before navigation even starts.
+	// The refused robots.txt fetch is advisory by default, so navigation still
+	// starts and is what fails.
 	await assert.rejects(
-		() => render(url, { har: file, timeout: 5000, ignoreRobots: true }),
+		() => render(url, { har: file, timeout: 5000 }),
 		/ERR_CONNECTION_REFUSED|net::/,
 	);
 
@@ -591,8 +591,8 @@ test("refuses a robots.txt-disallowed path before launching a browser", async ()
 	});
 	try {
 		await assert.rejects(
-			() => render(`${s.origin}/private/page.html`),
-			/robots\.txt disallows this path \(Disallow: \/private\/\)\. Use --ignore-robots to override\./,
+			() => render(`${s.origin}/private/page.html`, { respectRobots: true }),
+			/robots\.txt disallows this path \(Disallow: \/private\/\)\. Refused because strict robots mode is on \(--respect-robots, respectRobots, respect_robots\); leave it off to read the page anyway\./,
 		);
 	} finally {
 		await s.close();
@@ -604,7 +604,7 @@ test("refuses a robots.txt-disallowed path before launching a browser", async ()
 // is that `0` means "no timeout", so `Math.min(0, …)` aborted the robots fetch
 // on the next tick, the check failed open, and `--timeout 0` became a silent
 // synonym for `--ignore-robots`. An implausibly small timeout did the same.
-test("a disallowed path is still refused when timeout is 0 or tiny", async () => {
+test("strict mode still refuses a disallowed path when timeout is 0 or tiny", async () => {
 	const s = await serve({
 		"/robots.txt": "User-agent: *\nDisallow: /\n",
 	});
@@ -614,8 +614,8 @@ test("a disallowed path is still refused when timeout is 0 or tiny", async () =>
 				// NO_BROWSER makes the failure mode unambiguous: if the robots
 				// check were skipped we would reach browser resolution and see
 				// "Chromium binary not found" instead of this rejection.
-				() => render(`${s.origin}/secret.html`, { ...NO_BROWSER, timeout }),
-				/robots\.txt disallows this path \(Disallow: \/\)\. Use --ignore-robots to override\./,
+				() => render(`${s.origin}/secret.html`, { ...NO_BROWSER, respectRobots: true, timeout }),
+				/robots\.txt disallows this path \(Disallow: \/\)\. Refused because strict robots mode is on \(--respect-robots, respectRobots, respect_robots\); leave it off to read the page anyway\./,
 				`timeout: ${timeout} should not bypass the robots check`,
 			);
 		}
@@ -624,20 +624,30 @@ test("a disallowed path is still refused when timeout is 0 or tiny", async () =>
 	}
 });
 
-test("ignoreRobots skips the check entirely", async () => {
-	const s = await serve({
-		"/robots.txt": "User-agent: *\nDisallow: /\n",
+test("ignoreRobots is a no-op: robots.txt is still read, and strict mode still refuses", async () => {
+	const s = await serveRobots((_req, res) => {
+		res.writeHead(200, { "content-type": "text/plain" });
+		res.end("User-agent: *\nDisallow: /\n");
 	});
 	try {
-		// Reaching the (missing) browser proves the check did not fire.
+		// Default + ignoreRobots: robots.txt is requested and the read goes on
+		// (the missing browser is reached, so the check did not refuse).
 		await assert.rejects(
-			() =>
-				render(`${s.origin}/private/page.html`, {
-					...NO_BROWSER,
-					ignoreRobots: true,
-				}),
+			() => render(`${s.origin}/page`, { ...NO_BROWSER, ignoreRobots: true }),
 			/Chromium binary not found/,
 		);
+		assert.equal(s.hits.robots, 1, "ignoreRobots no longer suppresses the request");
+		// Combined with respectRobots it still means strict.
+		await assert.rejects(
+			() =>
+				render(`${s.origin}/page`, {
+					...NO_BROWSER,
+					ignoreRobots: true,
+					respectRobots: true,
+				}),
+			/robots\.txt disallows this path \(Disallow: \/\)/,
+		);
+		assert.equal(s.hits.page, 0);
 	} finally {
 		await s.close();
 	}
@@ -684,15 +694,15 @@ const status = (code) => (_req, res) => {
 };
 
 const UNREACHABLE_503 =
-	/robots\.txt is unreachable: http:\/\/127\.0\.0\.1:\d+\/robots\.txt returned HTTP 503 \(server error\)\. .*no browser-profile cookies.*Use --ignore-robots to override\./;
+	/robots\.txt is unreachable: http:\/\/127\.0\.0\.1:\d+\/robots\.txt returned HTTP 503 \(server error\)\. .*no browser-profile cookies.*Refused because strict robots mode is on \(--respect-robots, respectRobots, respect_robots\); leave it off to read the page anyway\./;
 
-test("a 503 robots.txt refuses the page before launching a browser", async () => {
+test("strict mode: a 503 robots.txt refuses the page before launching a browser", async () => {
 	const s = await serveRobots(status(503));
 	try {
 		// NO_BROWSER: had the check passed we would see "Chromium binary not
 		// found" instead.
 		await assert.rejects(
-			() => render(`${s.origin}/page`, NO_BROWSER),
+			() => render(`${s.origin}/page`, { ...NO_BROWSER, respectRobots: true }),
 			UNREACHABLE_503,
 		);
 		assert.equal(s.hits.robots, 1);
@@ -702,11 +712,11 @@ test("a 503 robots.txt refuses the page before launching a browser", async () =>
 	}
 });
 
-test("a 500 robots.txt refuses the page too", async () => {
+test("strict mode: a 500 robots.txt refuses the page too", async () => {
 	const s = await serveRobots(status(500));
 	try {
 		await assert.rejects(
-			() => render(`${s.origin}/page`, NO_BROWSER),
+			() => render(`${s.origin}/page`, { ...NO_BROWSER, respectRobots: true }),
 			/robots\.txt is unreachable: .* returned HTTP 500/,
 		);
 		assert.equal(s.hits.page, 0);
@@ -715,7 +725,7 @@ test("a 500 robots.txt refuses the page too", async () => {
 	}
 });
 
-test("a robots.txt redirect that ends in a 503 refuses the page", async () => {
+test("strict mode: a robots.txt redirect that ends in a 503 refuses the page", async () => {
 	const s = await serveRobots((_req, res, pathname) => {
 		if (pathname === "/robots.txt") {
 			res.writeHead(302, { location: "/robots-down" });
@@ -726,7 +736,7 @@ test("a robots.txt redirect that ends in a 503 refuses the page", async () => {
 	});
 	try {
 		await assert.rejects(
-			() => render(`${s.origin}/page`, NO_BROWSER),
+			() => render(`${s.origin}/page`, { ...NO_BROWSER, respectRobots: true }),
 			/robots\.txt is unreachable: .* returned HTTP 503/,
 		);
 		assert.equal(s.hits.robots, 2, "the redirect should have been followed");
@@ -750,29 +760,55 @@ for (const code of [404, 410, 429]) {
 	});
 }
 
-test("an unreachable robots.txt host refuses with a network-error message", async () => {
+test("strict mode: an unreachable robots.txt host refuses with a network-error message", async () => {
 	// Bind then close, so the port is (almost certainly) refusing connections.
 	const s = await serveRobots(status(200));
 	const { origin } = s;
 	await s.close();
 	await assert.rejects(
-		() => render(`${origin}/page`, NO_BROWSER),
-		/robots\.txt is unreachable: .*could not be fetched \(network error: .+\)\. .*Use --ignore-robots to override\./,
+		() => render(`${origin}/page`, { ...NO_BROWSER, respectRobots: true }),
+		/robots\.txt is unreachable: .*could not be fetched \(network error: .+\)\. .*Refused because strict robots mode is on \(--respect-robots, respectRobots, respect_robots\); leave it off to read the page anyway\./,
 	);
 });
 
-test("ignoreRobots never requests an unreachable robots.txt", async () => {
-	const s = await serveRobots(status(503));
-	try {
-		await assert.rejects(
-			() =>
-				render(`${s.origin}/page`, { ...NO_BROWSER, ignoreRobots: true }),
-			/Chromium binary not found/,
-		);
-		assert.equal(s.hits.robots, 0);
-	} finally {
-		await s.close();
+test("by default an unreachable robots.txt does not refuse the page", async () => {
+	for (const code of [500, 503]) {
+		const s = await serveRobots(status(code));
+		try {
+			await assert.rejects(
+				() => render(`${s.origin}/page`, NO_BROWSER),
+				/Chromium binary not found/,
+			);
+			assert.equal(s.hits.robots, 1, "robots.txt is still consulted");
+		} finally {
+			await s.close();
+		}
 	}
+});
+
+test("by default a robots.txt timeout and a connection failure do not refuse the page", async () => {
+	const hang = await serveRobots(() => {
+		// Never answer: the 10s robots budget is bounded, so use a stub fetch.
+	});
+	await hang.close();
+	// A fetch that times out the way an aborted request does.
+	const timingOut = async () => {
+		const err = new Error("aborted");
+		err.name = "AbortError";
+		throw err;
+	};
+	await assert.rejects(
+		() => render("http://127.0.0.1:9/page", { ...NO_BROWSER, fetch: timingOut }),
+		/Chromium binary not found/,
+	);
+	// A dead port: connection refused.
+	const dead = await serveRobots(status(200));
+	const { origin } = dead;
+	await dead.close();
+	await assert.rejects(
+		() => render(`${origin}/page`, NO_BROWSER),
+		/Chromium binary not found/,
+	);
 });
 
 test("never fetches robots.txt for a file:// URL", async () => {
@@ -790,9 +826,10 @@ test("never fetches robots.txt for a file:// URL", async () => {
 
 	// Same options against an http(s) URL *do* consult robots.txt — otherwise
 	// the assertion above would pass for the wrong reason. The spy throws, so
-	// that consultation is now a network-error denial (RFC 9309 §2.3.1.4).
+	// that consultation is a network-error denial (RFC 9309 §2.3.1.4) in strict
+	// mode.
 	await assert.rejects(
-		() => render("http://127.0.0.1:1/page", { ...NO_BROWSER, fetch: spy }),
+		() => render("http://127.0.0.1:1/page", { ...NO_BROWSER, fetch: spy, respectRobots: true }),
 		/robots\.txt is unreachable: .*network error/,
 	);
 	assert.equal(calls, 1);
@@ -863,30 +900,53 @@ test("navigates an allowed path and sends the default User-Agent", opts, async (
 	}
 });
 
-test("ignoreRobots navigates a path robots.txt would block", opts, async () => {
+// The design rule (CLAUDE.md, #140): trawl does not gate a user-directed page
+// read. This is the named regression test for it: a change that restores the
+// default refusal fails here.
+test("default flags fetch a page on a Disallow: / origin (robots.txt is advisory)", opts, async () => {
 	const s = await serve({
 		"/robots.txt": "User-agent: *\nDisallow: /\n",
 		"/private/page.html": `<!doctype html><p>secret</p>`,
 	});
 	try {
-		await assert.rejects(() => render(`${s.origin}/private/page.html`));
-		const { body } = await render(`${s.origin}/private/page.html`, {
-			ignoreRobots: true,
-		});
+		const { body } = await render(`${s.origin}/private/page.html`);
 		assert.match(body, /secret/);
 	} finally {
 		await s.close();
 	}
 });
 
-test("ignoreRobots reaches the page past a 503 robots.txt", opts, async () => {
+test("strict mode refuses the Disallow: / origin before navigating; ignoreRobots changes nothing", opts, async () => {
+	const s = await serve({
+		"/robots.txt": "User-agent: *\nDisallow: /\n",
+		"/private/page.html": `<!doctype html><p>secret</p>`,
+	});
+	try {
+		for (const extra of [{}, { ignoreRobots: true }]) {
+			await assert.rejects(
+				() =>
+					render(`${s.origin}/private/page.html`, {
+						respectRobots: true,
+						...extra,
+					}),
+				/robots\.txt disallows this path/,
+			);
+		}
+	} finally {
+		await s.close();
+	}
+});
+
+test("default flags reach the page past a 503 robots.txt; strict mode does not", opts, async () => {
 	const s = await serveRobots(status(503));
 	try {
-		await assert.rejects(() => render(`${s.origin}/page`), UNREACHABLE_503);
+		await assert.rejects(
+			() => render(`${s.origin}/page`, { respectRobots: true }),
+			UNREACHABLE_503,
+		);
 		assert.equal(s.hits.page, 0);
-		const { body } = await render(`${s.origin}/page`, { ignoreRobots: true });
+		const { body } = await render(`${s.origin}/page`);
 		assert.match(body, /reached the page/);
-		assert.equal(s.hits.robots, 1, "only the guarded run requested robots.txt");
 		assert.ok(s.hits.page >= 1);
 	} finally {
 		await s.close();
@@ -1226,24 +1286,44 @@ test("Crawl-delay paces robots and page requests across two render() calls", opt
 	assertSpaced(explicit, 800);
 });
 
-test("ignoreRobots skips Crawl-delay but still paces on the minimum interval", opts, async () => {
+test("a matching Disallow does not stop its Crawl-delay pacing the default read", opts, async () => {
 	const pacingStateDir = freshStateDir();
 	const s = await serve({
-		"/robots.txt": "User-agent: *\nCrawl-delay: 30\n",
+		"/robots.txt": "User-agent: *\nDisallow: /\nCrawl-delay: 0.8\n",
 		"/page.html": "<!doctype html><title>P</title><h1>Paced</h1>",
 	}, { stateDir: pacingStateDir });
 	try {
 		for (let i = 0; i < 2; i++) {
-			await render(`${s.origin}/page.html`, { pacingStateDir, ignoreRobots: true, minIntervalMs: 900 });
+			const { body } = await render(`${s.origin}/page.html`, { pacingStateDir, minIntervalMs: 0 });
+			assert.match(body, /Paced/);
 		}
 	} finally {
 		await s.close();
 	}
-	const pages = s.hits.filter((h) => h.path === "/page.html");
-	assert.equal(s.hits.filter((h) => h.path === "/robots.txt").length, 0);
-	assert.equal(pages.length, 2);
-	assertSpaced(pages, 900);
-	assert.ok(pages[1].at - pages[0].at < 30_000, "ignoreRobots honoured Crawl-delay");
+	const explicit = s.hits.filter((h) => h.path === "/robots.txt" || h.path === "/page.html");
+	assert.deepEqual(
+		explicit.map((h) => h.path),
+		["/robots.txt", "/page.html", "/robots.txt", "/page.html"],
+	);
+	assertSpaced(explicit, 800);
+});
+
+test("ignoreRobots no longer skips Crawl-delay: the default read is paced by it", opts, async () => {
+	const pacingStateDir = freshStateDir();
+	const s = await serve({
+		"/robots.txt": "User-agent: *\nCrawl-delay: 0.8\n",
+		"/page.html": "<!doctype html><title>P</title><h1>Paced</h1>",
+	}, { stateDir: pacingStateDir });
+	try {
+		for (let i = 0; i < 2; i++) {
+			await render(`${s.origin}/page.html`, { pacingStateDir, ignoreRobots: true, minIntervalMs: 0 });
+		}
+	} finally {
+		await s.close();
+	}
+	const explicit = s.hits.filter((h) => h.path === "/robots.txt" || h.path === "/page.html");
+	assert.equal(explicit.filter((h) => h.path === "/robots.txt").length, 2);
+	assertSpaced(explicit, 800);
 });
 
 test("the networkidle-fallback navigation passes through the same gate", opts, async () => {
@@ -1365,7 +1445,7 @@ test("cookies: a denial drops the 'no cookies' note only when cookies were sent"
 	const s = await serveRobots(status(503));
 	try {
 		await assert.rejects(
-			() => render(`${s.origin}/page`, { ...NO_BROWSER, cookies: [robotsCookie("k", "v4lu3-SECRET")] }),
+			() => render(`${s.origin}/page`, { ...NO_BROWSER, respectRobots: true, cookies: [robotsCookie("k", "v4lu3-SECRET")] }),
 			(err) => {
 				assert.match(err.message, /returned HTTP 503 \(server error\)/);
 				assert.doesNotMatch(err.message, /browser-profile cookies/);
@@ -1376,7 +1456,7 @@ test("cookies: a denial drops the 'no cookies' note only when cookies were sent"
 		);
 		// Nothing matched: the request was cookie-less, and the note stays.
 		await assert.rejects(
-			() => render(`${s.origin}/page`, { ...NO_BROWSER, cookies: [robotsCookie("k", "v", { domain: "example.com" })] }),
+			() => render(`${s.origin}/page`, { ...NO_BROWSER, respectRobots: true, cookies: [robotsCookie("k", "v", { domain: "example.com" })] }),
 			UNREACHABLE_503,
 		);
 	} finally {

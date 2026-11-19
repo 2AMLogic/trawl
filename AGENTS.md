@@ -1,3 +1,18 @@
+## Design rule: robots.txt is advisory
+
+**trawl does not gate a user-directed page read.** Loading a page at a human
+pace on a user's instruction is the same act as that user opening it in a
+browser. `robots.txt` is advisory by default (`--respect-robots`, library
+`respectRobots: true`, MCP `respect_robots` is the opt-in strict mode;
+`--ignore-robots` is a no-op), and no change may make a single paced read fail
+because of it. Abuse is limited by rate and volume: the per-origin pace, the
+per-origin budget, back-off on 429/503 and block pages, and the absence of any
+crawl mode. A proposal to add a new refusal on the fetch path needs an
+operator decision, recorded in an issue, before it is built. See
+[#140](https://github.com/2AMLogic/trawl/issues/140); the named test
+"default flags fetch a page on a Disallow: / origin" in `tests/render.test.mjs`
+fails if the refusal comes back.
+
 <!-- BEGIN LOOM ORCHESTRATION (AGENTS) -->
 This repository uses [Loom](https://github.com/rjwalters/loom) for AI-powered development orchestration (dual-runtime: Claude Code reads `CLAUDE.md`; OpenAI Codex CLI and other AGENTS.md-aware runtimes read this file). See the Loom repository for the full guide (roles, labels, worktrees, configuration). When installed, Loom also writes a locally-substituted copy of the runtime-neutral guide to `.loom/AGENTS.md`.
 
