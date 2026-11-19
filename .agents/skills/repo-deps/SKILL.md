@@ -69,7 +69,7 @@ gh auth status
 
 Read root `repo-policy.json` from `OWNER/.github` on its default branch, if
 accessible. This is the deployed organization policy. It records the canonical
-source in **rjwalters/repo/policies/**, its revision, desired provider/settings,
+source in **2AMLogic/repo/policies/**, its revision, desired provider/settings,
 and `dependencies.renovatePreset`. [[org-policy]] compares that installed copy
 with the canonical source and prepares organization updates. Do not invent a
 second organization preference file in a client or change an installed org copy
@@ -590,7 +590,7 @@ That object is an unreliable source for either one, for two different reasons:
 - `security_and_analysis.dependabot_alerts` is simply **absent** on many repos
   even when the object is otherwise fully populated, so a `// "UNKNOWN"`
   fallback on it reports "can't tell" for a repo you can read perfectly well.
-  (Verified against `rjwalters/repo`: `security_and_analysis` returns
+  (Verified against `2AMLogic/repo`: `security_and_analysis` returns
   `dependabot_security_updates` and the `secret_scanning*` keys with no
   `dependabot_alerts` among them.)
 - On a **private repo without GitHub Advanced Security**, GitHub omits the

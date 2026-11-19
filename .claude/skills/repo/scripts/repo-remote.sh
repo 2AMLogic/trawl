@@ -2565,7 +2565,19 @@ aws_up() {
 
   writeback_instance_id "$iid"
   local alias
+  # repo#827: a refused alias write is non-fatal, so record it for the up
+  # result's ssh_alias_written field instead of only logging.
+  local alias_written=true
+  # repo#830: an empty/whitespace/"None" host value is write_ssh_alias()'s
+  # deliberate no-stanza skip (repo#216) -- nothing was written, so the up
+  # result must not claim it was. The rejected-write message below stays
+  # refusal-only; emit_up_result flags this skip on the alias line the same
+  # way.
+  if host_value_missing "$ip" >/dev/null; then
+    alias_written=false
+  fi
   if ! alias="$(write_ssh_alias "$ip")"; then
+    alias_written=false
     log "SSH alias write for ${alias} was rejected (see error above); the SSH config was left untouched -- ssh ${alias} (or git-over-SSH via it) will not work until this is retried"
   fi
 
@@ -2599,7 +2611,7 @@ aws_up() {
     log "WARNING: no public IP resolved, so ${alias} was not refreshed and its host identity could not be verified -- whatever HostName it still carries is from a previous session and may now resolve to an unrelated instance. Re-run 'repo-remote up --yes' once the IP is available, then 'repo-remote verify', before using it."
   fi
 
-  emit_up_result "$iid" "$ip" "$alias" "$reused" "$ip"
+  emit_up_result "$iid" "$ip" "$alias" "$reused" "$ip" "$alias_written"
 }
 
 # `verify` (repo#458): resolve the instance id this repo EXPECTS at the alias,
@@ -2753,8 +2765,23 @@ gcp_up() {
     --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null || true)"
 
   writeback_instance_id "$vm"
-  local alias; alias="$(write_ssh_alias "$ip")"
-  emit_up_result "$vm" "$ip" "$alias" "$reused"
+  local alias
+  # repo#827: a refused alias write is non-fatal, so record it for the up
+  # result's ssh_alias_written field instead of only logging.
+  local alias_written=true
+  # repo#830: an empty/whitespace/"None" host value is write_ssh_alias()'s
+  # deliberate no-stanza skip (repo#216) -- nothing was written, so the up
+  # result must not claim it was. The rejected-write message below stays
+  # refusal-only; emit_up_result flags this skip on the alias line the same
+  # way.
+  if host_value_missing "$ip" >/dev/null; then
+    alias_written=false
+  fi
+  if ! alias="$(write_ssh_alias "$ip")"; then
+    alias_written=false
+    log "SSH alias write for ${alias} was rejected (see error above); the SSH config was left untouched -- ssh ${alias} (or git-over-SSH via it) will not work until this is retried"
+  fi
+  emit_up_result "$vm" "$ip" "$alias" "$reused" "$ip" "$alias_written"
 }
 
 gcp_status() {
@@ -2895,38 +2922,161 @@ writeback_instance_id() {  # <instance-id>
 REPO_REMOTE_SSH_LOCK_TIMEOUT="${REPO_REMOTE_SSH_LOCK_TIMEOUT:-15}"
 REPO_REMOTE_SSH_LOCK_POLL_INTERVAL="${REPO_REMOTE_SSH_LOCK_POLL_INTERVAL:-1}"
 
-# acquire_ssh_alias_lock <cfg> -- atomically creates "<cfg>.lock" (mkdir),
-# retrying until REPO_REMOTE_SSH_LOCK_TIMEOUT elapses. A lock left behind by a
-# process that no longer exists (stale, e.g. killed mid-write) is cleared once
-# and retried. Fails LOUDLY (die, non-zero exit) on timeout rather than
-# hanging forever or silently skipping the write.
+# acquire_ssh_alias_lock <cfg> -- atomically creates "<cfg>.lock" (a symlink
+# whose target is the owning pid) and retries until
+# REPO_REMOTE_SSH_LOCK_TIMEOUT elapses. A lock left behind by a process that
+# no longer exists (stale, e.g. killed mid-write) is cleared once and
+# retried, as is any non-symlink residue at the path (a legacy pre-#815
+# mkdir'd lock dir -- see the loop body). Fails LOUDLY (die, non-zero exit)
+# on timeout rather than hanging forever or silently skipping the write.
+#
+# repo#815: the lock is a SYMLINK, not a directory, on purpose. The previous
+# design mkdir'd a lock dir and only THEN wrote owner.pid into it, so every
+# lock passed through an unregistered instant: a waiter executing a stale
+# break in that window could move (or delete) a creator's still-nameless
+# dir, leaving unregistered "holders", nested lock dirs, and eventually a
+# wedged path whose dir had no owner.pid at all -- unbreakable (empty pid
+# reads were skipped) and unownable (the echo had already failed) -- which
+# made every later acquire time out. A symlink lock is born fully
+# registered: `ln -s <pid>` is atomic and fails if anything is already at
+# the path, so there is no instant at which the lock exists without an
+# owner, and a dead-owner lock is always cleanly breakable.
 acquire_ssh_alias_lock() {  # <cfg>
   local cfg="$1" lock="$1.lock"
   local deadline=$(( $(date +%s) + REPO_REMOTE_SSH_LOCK_TIMEOUT ))
   local stale_retry_done=0
+  local legacy_break_done=0
   while true; do
-    if mkdir "$lock" 2>/dev/null; then
-      echo "$$" >"$lock/owner.pid" 2>/dev/null || true
+    # repo#818: any NON-symlink at the lock path (a legacy pre-#815 mkdir'd
+    # lock dir -- exactly what the replaced code leaves behind when a writer
+    # dies between mkdir and release -- or any other residue) must be broken
+    # explicitly: against a directory `ln -s` creates "$lock/$$" INSIDE it
+    # and exits 0, so acquire would report success while holding nothing,
+    # every write would then fail the ownership re-validation ("another
+    # writer took over"), and nothing downstream could clear the path
+    # (release's readlink reads an empty owner on a directory) -- a
+    # permanent wedge on the very input the replaced code recovered from.
+    # Break it the same SINGLE-WINNER way as the symlink stale break below:
+    # `mv` is an atomic rename, so only one waiter can quarantine the path,
+    # and the quarantined dir is removed only while its owner.pid records a
+    # dead (or absent) owner -- a live legacy holder falls through to the
+    # normal wait. At most once per acquire, so a path that cannot be
+    # removed falls through to the deadline/timeout instead of hot-looping.
+    if [[ -e "$lock" && ! -L "$lock" ]]; then
+      if [[ "$legacy_break_done" -eq 0 ]]; then
+        local legacy_pid=""
+        if [[ -f "$lock/owner.pid" ]]; then
+          legacy_pid="$(cat "$lock/owner.pid" 2>/dev/null || true)"
+        fi
+        if [[ -z "$legacy_pid" ]] || ! kill -0 "$legacy_pid" 2>/dev/null; then
+          legacy_break_done=1
+          local stale_target="$lock.stale.$$"
+          if mv "$lock" "$stale_target" 2>/dev/null; then
+            rm -rf "$stale_target" 2>/dev/null || true
+          fi
+          continue
+        fi
+      fi
+    elif ln -s "$$" "$lock" 2>/dev/null; then
+      # Deliberately NO ownership re-check here (repo#818 follow-up: measured
+      # in review): re-reading the lock right after a successful `ln -s` and
+      # falling through on a mismatch livelocks the acquirer on its OWN lock
+      # -- a stale-breaker can be mid-quarantine on our just-created symlink
+      # (its `mv` back restores it), and readlink == $$ is a LIVE owner by
+      # definition, so the wait loop below can never break it: every waiter
+      # dies 4 (A/B harness: 5/12 rounds failed with the re-check, 0/12
+      # without). Dispossession after acquire is handled where it matters:
+      # write_ssh_alias / remove_ssh_alias_blocks re-validate ownership
+      # immediately before installing and refuse loudly (rc 1, config
+      # untouched), so a swapped-out holder can never write unprotected.
       return 0
     fi
 
     local owner_pid=""
-    [[ -f "$lock/owner.pid" ]] && owner_pid="$(cat "$lock/owner.pid" 2>/dev/null || true)"
+    owner_pid="$(readlink "$lock" 2>/dev/null || true)"
     if [[ -n "$owner_pid" ]] && [[ "$stale_retry_done" -eq 0 ]] && ! kill -0 "$owner_pid" 2>/dev/null; then
-      rm -rf "$lock" 2>/dev/null || true
+      # repo#815: the break must be SINGLE-WINNER and IDENTITY-VERIFIED.
+      # A bare `rm -f` lets two waiters that both judge the same stale
+      # lock dead each remove the path -- and the second removal deletes
+      # whatever the FIRST waiter installed there in between (its live
+      # lock), so both hold the lock and one written stanza is silently
+      # lost. `mv` is an atomic rename, so exactly one waiter can
+      # quarantine what is at the path; but a judgement can be stale by
+      # the time it acts (another acquirer may have installed a lock
+      # between our readlink and our mv), so the quarantined symlink is
+      # deleted only if its owner is STILL dead -- anything alive goes
+      # straight back where it came from. (mv onto an existing symlink
+      # replaces it; the displaced acquirer detects the swap via
+      # ssh_alias_lock_held_by_me before writing and fails loudly instead
+      # of writing unprotected, so no lock is ever held by two writers
+      # silently.)
+      local stale_target="$lock.stale.$$"
+      if mv "$lock" "$stale_target" 2>/dev/null; then
+        local moved_pid=""
+        moved_pid="$(readlink "$stale_target" 2>/dev/null || true)"
+        if [[ -n "$moved_pid" ]] && ! kill -0 "$moved_pid" 2>/dev/null; then
+          rm -f "$stale_target" 2>/dev/null || true
+        else
+          # A live owner's lock -- put it back. (If a third waiter
+          # installed over the empty path meanwhile, this mv replaces its
+          # symlink; the displaced waiter detects that via
+          # ssh_alias_lock_held_by_me before writing and refuses loudly.)
+          mv "$stale_target" "$lock" 2>/dev/null || rm -f "$stale_target" 2>/dev/null || true
+        fi
+      fi
       stale_retry_done=1
       continue
     fi
 
     if [[ $(date +%s) -ge $deadline ]]; then
-      die 4 "timed out after ${REPO_REMOTE_SSH_LOCK_TIMEOUT}s waiting for the SSH config lock (${lock}) -- a concurrent repo-remote invocation may be writing ${cfg}; remove the lock dir manually if no such process is actually running"
+      die 4 "timed out after ${REPO_REMOTE_SSH_LOCK_TIMEOUT}s waiting for the SSH config lock (${lock}) -- a concurrent repo-remote invocation may be writing ${cfg}; remove the lock manually if no such process is actually running"
     fi
     sleep "$REPO_REMOTE_SSH_LOCK_POLL_INTERVAL"
   done
 }
 
 release_ssh_alias_lock() {  # <cfg>
-  rm -rf "$1.lock" 2>/dev/null || true
+  # repo#815: OWNED release -- only the process whose pid is recorded as the
+  # symlink target (written atomically by acquire_ssh_alias_lock) may remove
+  # the lock. A bare `rm -f "$1.lock"` deletes whichever lock is CURRENTLY
+  # at the path, which after a stale-break race can be another acquirer's
+  # freshly installed lock -- removing it re-opens the two-holder window
+  # this lock exists to close.
+  local lock="$1.lock" owner_pid=""
+  owner_pid="$(readlink "$lock" 2>/dev/null || true)"
+  if [[ -n "$owner_pid" && "$owner_pid" == "$$" ]]; then
+    rm -f "$lock" 2>/dev/null || true
+  fi
+}
+
+# ssh_alias_lock_held_by_me <cfg> -- true when the lock at "<cfg>.lock" still
+# records THIS process as its owner, i.e. the lock we acquired is still the
+# one at the path. repo#815 backstop: a waiter's stale-break can in a
+# narrow window quarantine a live holder's lock (it is restored by mv back,
+# but a third acquirer may have installed a lock over the empty path
+# meanwhile, and the restore replaces it), leaving the original holder
+# working without its lock. Rather than write anyway -- the silent lost
+# update this lock exists to prevent -- the holder re-validates immediately
+# before installing its temp file and refuses loudly when dispossessed.
+ssh_alias_lock_held_by_me() {  # <cfg>
+  [[ "$(readlink "$1.lock" 2>/dev/null || true)" == "$$" ]]
+}
+
+# host_value_missing: the ONE shared "there is no host value to write"
+# predicate (repo#830). Trims whitespace, then reports missing (rc 0) for an
+# empty value or the literal "None" -- the AWS CLI's `--output text` rendering
+# of a null scalar (see aws_public_ip()). write_ssh_alias() deliberately
+# skips the stanza on this predicate (repo#216), and the up call sites use it
+# to report ssh_alias_written:false for that skip, so the two definitions
+# cannot drift apart. The trimmed value is echoed on stdout so
+# write_ssh_alias() can reuse it for its config-line hygiene check; callers
+# that only need the verdict discard it.
+host_value_missing() {  # <host-value> [stdout: the trimmed value]
+  local v="${1-}"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  printf '%s' "$v"
+  [[ -z "$v" || "$v" == "None" ]]
 }
 
 # Write/refresh the one-word SSH alias so the connection is `ssh repo-remote-<name>`.
@@ -2954,11 +3104,11 @@ write_ssh_alias() {  # <ip | instance-id> [ssm-region]
   # string, so a whitespace value or the literal "None" could slip through
   # and produce a HostName-less stanza -- which OpenSSH does not skip, it
   # refuses to parse the ENTIRE config file, taking every other Host block
-  # (and therefore git-over-SSH) down with it (repo#216).
-  local ip_trimmed="$ip"
-  ip_trimmed="${ip_trimmed#"${ip_trimmed%%[![:space:]]*}"}"
-  ip_trimmed="${ip_trimmed%"${ip_trimmed##*[![:space:]]}"}"
-  if [[ -z "$ip_trimmed" || "$ip_trimmed" == "None" ]]; then
+  # (and therefore git-over-SSH) down with it (repo#216). The predicate is
+  # shared with the up call sites (repo#830) and echoes the trimmed value,
+  # which the config-line hygiene check below needs.
+  local ip_trimmed
+  if ip_trimmed="$(host_value_missing "$ip")"; then
     printf '%s' "$alias"
     return 0
   fi
@@ -3018,6 +3168,16 @@ write_ssh_alias() {  # <ip | instance-id> [ssm-region]
   # edits ~/.ssh/config must never be able to leave it unparseable.
   if ! ssh -G -F "$tmp" "$alias" >/dev/null 2>&1; then
     log "generated SSH config block for '${alias}' (ip='${ip}') failed to parse -- leaving ${cfg} untouched"
+    rm -f "$tmp"
+    release_ssh_alias_lock "$cfg"
+    printf '%s' "$alias"
+    return 1
+  fi
+
+  # repo#815 backstop: the lock we acquired must still be ours right before
+  # the atomic install. Dispossessed => refuse loudly, never write unlocked.
+  if ! ssh_alias_lock_held_by_me "$cfg"; then
+    log "lost the SSH config lock for '${alias}' before installing it (another writer took over) -- leaving ${cfg} untouched; retry the write"
     rm -f "$tmp"
     release_ssh_alias_lock "$cfg"
     printf '%s' "$alias"
@@ -3096,6 +3256,13 @@ remove_ssh_alias_blocks() {  # <alias>...
     return 1
   fi
   chmod --reference="$cfg" "$tmp" 2>/dev/null || chmod 600 "$tmp" 2>/dev/null || true
+  # repo#815 backstop: same holder re-validation as write_ssh_alias.
+  if ! ssh_alias_lock_held_by_me "$cfg"; then
+    log "lost the SSH config lock before installing the removal (another writer took over) -- leaving ${cfg} untouched; retry the removal"
+    rm -f "$tmp"
+    release_ssh_alias_lock "$cfg"
+    return 1
+  fi
   mv "$tmp" "$cfg"
   release_ssh_alias_lock "$cfg"
   while IFS= read -r h; do
@@ -3854,8 +4021,18 @@ emit_plan() {  # dry-run plan (no cloud mutation)
   fi
 }
 
-emit_up_result() {  # <id> <ip> <alias> <reused> [connect-target]
-  local id="$1" ip="$2" alias="$3" reused="$4" target="${5-$2}"
+emit_up_result() {  # <id> <ip> <alias> <reused> [connect-target] [alias-written]
+  # <alias-written> (repo#827, additive): false when write_ssh_alias()
+  # REFUSED the write (non-zero return) and the caller continued non-fatally,
+  # and (repo#830) when the caller skipped the write because the host value
+  # was empty/whitespace/"None" (host_value_missing, the repo#216 skip) -- in
+  # both cases no stanza was written this run. The alias itself stays
+  # populated in $3 either way -- it is the alias the run intended, printed
+  # by write_ssh_alias() before its return 1 -- so this boolean is the
+  # disambiguator, never a replacement for ssh_alias. Defaults to true: every
+  # caller that dies on a refused write (the ssm site) never reaches
+  # emit_up_result with a refused alias.
+  local id="$1" ip="$2" alias="$3" reused="$4" target="${5-$2}" alias_written="${6:-true}"
   if [[ "$JSON_OUT" == true ]]; then
     printf '{'
     printf '"action":"up",'
@@ -3882,6 +4059,12 @@ emit_up_result() {  # <id> <ip> <alias> <reused> [connect-target]
     printf '"estimated_hourly_cost_usd":%s,' "$COST_HOURLY"
     printf '"estimated_cost_approximate":%s,' "$COST_APPROX"
     printf '"estimated_cost_basis":"%s"' "$(json_escape "$COST_BASIS")"
+    # repo#827 (additive, appended after every existing field so the field
+    # order consumers may rely on is unchanged): whether the SSH alias was
+    # actually written to the SSH config in this run (false on a non-fatally
+    # refused write, repo#827, and on the deliberate empty/"None"-host
+    # no-stanza skip, repo#830). ssh_alias above stays populated either way.
+    printf ',"ssh_alias_written":%s' "$alias_written"
     printf '}\n'
   else
     if [[ "$PROVIDER" == aws && "$TRANSPORT" == ssm ]]; then
@@ -3889,7 +4072,14 @@ emit_up_result() {  # <id> <ip> <alias> <reused> [connect-target]
     else
       log "$([[ "$reused" == true ]] && echo reused || echo created) instance $id (${INSTANCE_TYPE}) @ ${ip:-<no public ip>}"
     fi
-    log "  ssh alias:        $alias"
+    if [[ "$alias_written" == true ]]; then
+      log "  ssh alias:        $alias"
+    else
+      # repo#827/#830: the alias was intended but NOT installed in the SSH
+      # config (refused write, or the empty/"None"-host skip), so flag it on
+      # the alias line rather than letting it read as usable.
+      log "  ssh alias:        $alias (NOT written to the SSH config)"
+    fi
     log "  attach:           repo-remote attach   (verifies the host, then opens a session with a fresh GitHub credential)"
     log "  est. hourly cost: \$${COST_HOURLY}/hr$(cost_note_human)"
     if is_spot; then

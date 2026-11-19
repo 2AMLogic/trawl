@@ -731,8 +731,9 @@ Early but usable: `trawl` renders client-side pages to text, HTML, links,
 title or Markdown, captures HAR traffic and screenshots, and consults
 `robots.txt` — advisory by default; a read is refused for it only in strict
 `--respect-robots` mode. It detects auth walls, drives pages with click
-steps, paces requests across runs, and backs off politely on blocks
-(403/429/503, and challenge pages served with 200).
+and scroll steps, paces requests across runs, caps each origin with a shared
+page budget, and backs off politely on blocks (403/429/503, and challenge
+pages served with 200).
 Browser profiles (`trawl login`, `--profile`) carry authenticated sessions
 across runs, and cookies can be imported from a captured HAR for replay,
 with opt-in redaction of the HAR itself. See [CHANGELOG.md](CHANGELOG.md) for what has shipped and
@@ -748,8 +749,8 @@ default rather than asking you to promise you will.
 - **`robots.txt` is advisory.** Each invocation reads the one URL you gave
   it, at a human pace, which is the same act as you opening that page in a
   browser, so a disallowed path or an unreachable `robots.txt` does not stop
-  it. Abuse is limited by rate and volume instead: per-origin pacing, back-off
-  on blocks (403/429/503 and challenge pages, below), and no crawl mode.
+  it. Abuse is limited by rate and volume instead: per-origin pacing, a shared
+  per-origin page budget (60 an hour, 200 a day), back-off on blocks (403/429/503 and challenge pages, below), and no crawl mode.
   `trawl` still fetches `robots.txt` for `http(s)` URLs, so a matching group's `Crawl-delay` still paces the read
   (a matching `Disallow` does not switch it off). **`--respect-robots`**
   (library: `respectRobots: true`; MCP: `respect_robots: true`) is the strict
@@ -794,7 +795,7 @@ default rather than asking you to promise you will.
   does. A cookie partitioned under a parent domain (`example.com`, for a
   fetch of `www.example.com`) is left out too, although the browser would
   send it. On that path the browser starts before the `robots.txt` check, so
-  a run that `robots.txt` refuses still leaves behind the profile directory
+  a run that `robots.txt` refuses (under `--respect-robots`) still leaves behind the profile directory
   (created if it did not exist) and, with `--har`, a HAR file with no
   entries. When the request carried cookies, a failure is reported as a
   known error code (`ECONNREFUSED`, `ENOTFOUND`, ...) or `request failed`,

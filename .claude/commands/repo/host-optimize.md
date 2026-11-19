@@ -4,6 +4,7 @@ description: "Audit and prepare a Mac (or Linux box) for heavy Loom/agent build 
 domain: repo
 type: command
 user-invocable: true
+disable-model-invocation: true
 ---
 
 # /repo:host-optimize — Prepare a Build Host

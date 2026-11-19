@@ -4,6 +4,7 @@ description: "Audit gitignore rules — find over-ignored files and under-ignore
 domain: repo
 type: command
 user-invocable: true
+disable-model-invocation: true
 ---
 
 # /repo:gitignore — Gitignore Audit

@@ -262,7 +262,10 @@ fingerprint_search() {  # <exact-phrase> <field: description|readme> <root-owner
     [[ -n "$fn" ]] || continue
     [[ "$owner" == "$root_owner" ]] && continue
     in_array "$fn" "${VISITED[@]}" && continue
-    in_array "$fn" "${FP_FULLNAME[@]}" && continue
+    # `${FP_FULLNAME[@]+...}`: bash < 4.4 (stock macOS /bin/bash 3.2) treats a
+    # plain "${FP_FULLNAME[@]}" on an EMPTY array as unbound under set -u, so
+    # the first fingerprint hit aborted the whole sweep (#814).
+    in_array "$fn" ${FP_FULLNAME[@]+"${FP_FULLNAME[@]}"} && continue
 
     if [[ "$field" == "description" ]]; then
       # Exact-match confirmation (per issue: "flag exact matches").
