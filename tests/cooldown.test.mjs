@@ -883,6 +883,75 @@ test("a challenge page served with 200 is a block and records a cooldown", brows
 	}
 });
 
+// A real Cloudflare managed challenge, captured live (provenance, headers and
+// selector observations: tests/fixtures/cloudflare-managed-challenge.md). Unlike
+// CHALLENGE_PAGE above, none of this markup is hand-authored. Measured: the
+// live response was HTTP 403, and the raw HTML has no element matching any of
+// the five challenge selectors — the `/cdn-cgi/challenge-platform` script is
+// created by the page's inline JS, so the marker only exists post-JS.
+const CAPTURE_URL = new URL("./fixtures/cloudflare-managed-challenge.html", import.meta.url);
+const serveCapture = (status) =>
+	serve({
+		"/robots.txt": ROBOTS,
+		"/page": (_req, res) => {
+			res.writeHead(status, { "content-type": "text/html; charset=UTF-8" });
+			res.end(readFileSync(CAPTURE_URL));
+		},
+	});
+
+test("the captured challenge: title is exact and no selector matches before scripts run", () => {
+	const raw = readFileSync(CAPTURE_URL, "utf8");
+	assert.equal(raw.match(/<title>([^<]*)<\/title>/)[1], "Just a moment...");
+	assert.doesNotMatch(raw, /id="(challenge-form|challenge-stage|challenge-running|cf-chl)/);
+	assert.doesNotMatch(raw, /<script[^>]*\ssrc=/);
+	// Present only as text inside the inline script that injects it at run time.
+	assert.match(raw, /a\.src = '\/cdn-cgi\/challenge-platform\//);
+});
+
+test("the captured challenge, as served live (HTTP 403), is a block and records a cooldown", browser, async () => {
+	const stateDir = freshDir();
+	const s = await serveCapture(403);
+	try {
+		await assert.rejects(() => render(`${s.origin}/page`, { stateDir, minIntervalMs: 0 }), (err) => {
+			assert.ok(err instanceof BlockedError, err.stack);
+			assert.equal(err.status, 403);
+			assert.deepEqual(err.reasons, ["main-frame HTTP 403"]);
+			return true;
+		});
+		const rec = parseRecord(
+			readFileSync(createCooldownStore({ stateDir }).statePathFor(s.origin), "utf8"),
+		);
+		assert.equal(rec.failures, 1);
+		assert.equal(rec.status, 403);
+	} finally {
+		await s.close();
+	}
+});
+
+// The live status was 403, so this is a synthetic status: it replays the real
+// body with a 200 to prove the production probe matches Cloudflare's own markup
+// once its inline script has run, which is the case detectChallenge exists for.
+test("the captured challenge body replayed with HTTP 200 matches the production predicate", browser, async () => {
+	const stateDir = freshDir();
+	const s = await serveCapture(200);
+	try {
+		await assert.rejects(() => render(`${s.origin}/page`, { stateDir, minIntervalMs: 0 }), (err) => {
+			assert.ok(err instanceof BlockedError, err.stack);
+			assert.equal(err.status, 200);
+			assert.ok(err.reasons.some((r) => r.includes('title is "Just a moment..."')), err.reasons);
+			assert.ok(err.reasons.some((r) => /^1 challenge element matches/.test(r)), err.reasons);
+			return true;
+		});
+		const rec = parseRecord(
+			readFileSync(createCooldownStore({ stateDir }).statePathFor(s.origin), "utf8"),
+		);
+		assert.equal(rec.failures, 1);
+		assert.equal(rec.status, 403);
+	} finally {
+		await s.close();
+	}
+});
+
 // The negative fixture: an ordinary article *about* blocked access. It quotes
 // the challenge title in prose and mentions the markup, but no title match
 // plus challenge machinery — so it renders normally and records nothing.
