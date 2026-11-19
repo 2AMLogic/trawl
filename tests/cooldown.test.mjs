@@ -574,7 +574,7 @@ test("a cooling-down origin is refused before robots.txt or browser resolution",
 	const stateDir = freshDir();
 	const origin = "http://127.0.0.1:9";
 	await seed(stateDir, origin);
-	for (const extra of [{}, { ignoreRobots: true }, { pacing: false }]) {
+	for (const extra of [{}, { ignoreRobots: true }, { respectRobots: true }, { pacing: false }]) {
 		let fetched = 0;
 		await assert.rejects(
 			() =>
@@ -626,12 +626,12 @@ test("a non-http(s) URL never touches the cooldown state", async () => {
 	assert.deepEqual(readdirSync(stateDir), []);
 });
 
-test("a 503 robots.txt is a robots refusal, never a cooldown", async () => {
+test("a 503 robots.txt is a strict-mode robots refusal, never a cooldown", async () => {
 	const stateDir = freshDir();
 	const s = await serve({ "/robots.txt": respond(503, { "retry-after": "600" }, "busy") });
 	try {
 		await assert.rejects(
-			() => render(`${s.origin}/page`, { ...NO_BROWSER, stateDir }),
+			() => render(`${s.origin}/page`, { ...NO_BROWSER, stateDir, respectRobots: true }),
 			/robots\.txt is unreachable/,
 		);
 	} finally {
@@ -640,7 +640,10 @@ test("a 503 robots.txt is a robots refusal, never a cooldown", async () => {
 	assert.equal(existsSync(path.join(stateDir, "cooldown")), false);
 });
 
-test("a cooldown recorded during the pacing wait refuses the paced request", async () => {
+// The cooldown gate sits outside the robots verdict branch, so it propagates in
+// advisory and strict mode alike.
+for (const mode of [{}, { respectRobots: true }]) {
+test(`a cooldown recorded during the pacing wait refuses the paced request (${JSON.stringify(mode)})`, async () => {
 	const stateDir = freshDir();
 	const origin = "http://127.0.0.1:9";
 	// Prime pacing so the next request to this origin waits ~1.5s.
@@ -650,6 +653,7 @@ test("a cooldown recorded during the pacing wait refuses the paced request", asy
 	let fetched = 0;
 	const rendering = render(`${origin}/page`, {
 		...NO_BROWSER,
+		...mode,
 		stateDir,
 		minIntervalMs: 1500,
 		fetch: async () => {
@@ -664,6 +668,7 @@ test("a cooldown recorded during the pacing wait refuses the paced request", asy
 	// The refused request was not recorded as a pacing attempt.
 	assert.equal(readFileSync(path.join(stateDir, "pacing", pacingFile), "utf8"), pacedBefore);
 });
+}
 
 test("MCP reports a cooldown refusal as a tool error", async () => {
 	const origin = "http://127.0.0.1:9";

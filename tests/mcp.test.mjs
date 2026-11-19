@@ -174,6 +174,42 @@ test("fetch_links maps the load controls too", () => {
 	assert.equal(options.timeout, 1);
 });
 
+test("both tools advertise a boolean respect_robots, off by default", () => {
+	for (const tool of TOOLS) {
+		const prop = tool.inputSchema.properties.respect_robots;
+		assert.equal(prop.type, "boolean", `${tool.name} respect_robots`);
+		assert.match(prop.description, /advisory/);
+		assert.equal(tool.inputSchema.required.includes("respect_robots"), false);
+	}
+});
+
+test("respect_robots maps to respectRobots for both tools, and is absent when omitted", () => {
+	for (const name of ["fetch_page", "fetch_links"]) {
+		const on = renderOptionsFor(name, { url: "u", respect_robots: true });
+		assert.equal(on.options.respectRobots, true, name);
+		const off = renderOptionsFor(name, { url: "u", respect_robots: false });
+		assert.equal(off.options.respectRobots, false, name);
+		const absent = renderOptionsFor(name, { url: "u" });
+		assert.equal("respectRobots" in absent.options, false, name);
+		const nulled = renderOptionsFor(name, { url: "u", respect_robots: null });
+		assert.equal("respectRobots" in nulled.options, false, name);
+		// Never a way to turn robots handling off from the agent side.
+		assert.equal("ignoreRobots" in on.options, false, name);
+	}
+});
+
+test("respect_robots rejects a non-boolean rather than reading it as truthy", () => {
+	for (const name of ["fetch_page", "fetch_links"]) {
+		for (const value of ["false", "true", 1, 0, {}]) {
+			assert.throws(
+				() => renderOptionsFor(name, { url: "u", respect_robots: value }),
+				/"respect_robots" must be a boolean/,
+				`${name} ${JSON.stringify(value)}`,
+			);
+		}
+	}
+});
+
 // The guard for "omitting all three leaves behaviour exactly as today".
 // `render()` merges `{ ...DEFAULTS, ...options }` and an object spread does
 // NOT skip `undefined`, so an always-set key would overwrite
