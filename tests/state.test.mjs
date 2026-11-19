@@ -24,6 +24,7 @@ import {
 	LockTimeoutError,
 	acquireStateLock,
 	createFileLock,
+	isLoopbackOrigin,
 	originDigest,
 	stateFilesFor,
 	stateOrigin,
@@ -395,6 +396,36 @@ test("stateOrigin returns null for non-http(s) and unparseable input", () => {
 		"",
 	]) {
 		assert.equal(stateOrigin(u), null, u);
+	}
+});
+
+// Literal hostname match only (#164): a name that merely resolves to
+// loopback is not exempt, and neither is anything outside the three shapes
+// the operator ruling names (localhost, 127.0.0.0/8, [::1]).
+test("isLoopbackOrigin matches localhost, 127.0.0.0/8 and [::1] literally", () => {
+	for (const origin of [
+		"http://localhost:4321",
+		"https://LOCALHOST:8443/x",
+		"http://127.0.0.1:3000",
+		"http://127.0.0.0/",
+		"http://127.1.2.3/",
+		"http://127.255.255.254/",
+		"http://[::1]:8080/",
+	]) {
+		assert.equal(isLoopbackOrigin(origin), true, origin);
+	}
+	for (const origin of [
+		"https://example.com/",
+		"http://localhost.example.com/",
+		"http://sub.localhost/",
+		"http://10.0.0.1/",
+		"http://192.168.1.1/",
+		"http://0.0.0.0/",
+		"http://[::1.example.com]/",
+		"file:///tmp/x",
+		"not a url",
+	]) {
+		assert.equal(isLoopbackOrigin(origin), false, origin);
 	}
 });
 

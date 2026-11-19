@@ -505,9 +505,11 @@ test("--no-pacing opts out: no cross-run wait and no pacing state written", asyn
 	}
 	assert.equal(s.hits.length, 2);
 	assert.ok(s.hits[1].at - s.hits[0].at < 10000, "--no-pacing still waited");
-	// No pacing state, but the page budget is not disabled by --no-pacing:
-	// both admitted attempts were still counted (src/budget.mjs).
-	assert.deepEqual(readdirSync(TRAWL_STATE_DIR), ["budget"]);
+	// No pacing state — and no budget state either: this fixture origin is
+	// loopback, which is budget-exempt by design (#164). The "no override
+	// disables the budget" property is proven on a non-loopback origin in
+	// tests/budget.test.mjs.
+	assert.deepEqual(readdirSync(TRAWL_STATE_DIR), []);
 });
 
 test("two CLI renders space every robots.txt and page request", opts, async () => {

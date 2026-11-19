@@ -91,7 +91,9 @@ trawl mcp                  Serve fetch_page/fetch_links over MCP (stdio)
       --min-interval <ms>  Minimum gap between requests to one origin,
                             across separate runs; Crawl-delay still wins if
                             larger. 0 drops the floor only. Max 60000.
-                             (default: 3000, plus 0-500ms jitter)
+                             (default: 3000, plus 0-500ms jitter;
+                             loopback origins — localhost, 127.x, [::1] —
+                             default to 0 with no jitter)
       --no-pacing          Don't pace requests across runs (Crawl-delay is
                             still honored within a run). Pacing state lives
                             in $TRAWL_STATE_DIR, else
@@ -104,8 +106,10 @@ trawl mcp                  Serve fetch_page/fetch_links over MCP (stdio)
                             budget — 60 per rolling hour, 200 per rolling
                             day, shared by every trawl entry point through
                             the same state directory (see exit code 5).
-                            Bypasses the refusal only: the attempt is still
-                            counted, and cooldowns and pacing still apply.
+                            Loopback origins (localhost, 127.x, [::1]) are
+                            exempt: never counted, never refused. Bypasses
+                            the refusal only: the attempt is still counted,
+                            and cooldowns and pacing still apply.
       --profile <dir>      Persistent browser profile (cookies/localStorage
                             survive across runs); also $TRAWL_PROFILE_DIR.
                             Populate one with "trawl login" (which defaults
@@ -635,6 +639,10 @@ carries 0–500 ms of jitter — an explicit value is used exactly as given),
 `{ pacing: false }` turns
 cross-run pacing off, and `{ stateDir }` overrides where the state is
 kept (default `$TRAWL_STATE_DIR`, else `${XDG_CACHE_HOME:-~/.cache}/trawl`).
+Loopback origins (`localhost`, `127.x.x.x`, `[::1]`, matched literally)
+are exempt from the default floor — omitted means 0 ms with no jitter —
+and from the page budget below; an explicit `{ minIntervalMs }` and any
+`Crawl-delay` still apply to them.
 The older `{ pacingStateDir }` is a fallback for that same directory when
 `{ stateDir }` is not given — cooldowns and the page budget live there too,
 so given alone it does not move the pacing state alone. To keep the pacing
@@ -664,7 +672,9 @@ the attempt is still counted, and cooldowns and pacing are untouched. When
 the budget state itself cannot be recorded (an unwritable directory, a stuck
 lock, a corrupt record), it rejects with `BudgetUnavailableError`
 (`code: "TRAWL_BUDGET_UNAVAILABLE"`) instead — a broken state directory, not
-a spent budget. Non-`http(s)` URLs never touch the budget.
+a spent budget. Non-`http(s)` URLs never touch the budget, and neither do
+loopback origins (`localhost`, `127.x.x.x`, `[::1]`) — never counted, never
+refused.
 
 ### As an MCP server
 
@@ -711,7 +721,8 @@ Tool calls are paced per origin with the default 3000 ms floor and count
 against the same per-origin page budgets (60/rolling hour, 200/rolling day)
 as the CLI and library, shared through the same state directory
 (`$TRAWL_STATE_DIR`); an exhausted budget comes back as a tool error naming
-the window. There is no MCP-level budget override.
+the window. Loopback origins (`localhost`, `127.x.x.x`, `[::1]`) are exempt
+from both, as in every entry point. There is no MCP-level budget override.
 
 ## Why not X?
 
@@ -821,6 +832,11 @@ default rather than asking you to promise you will.
   `Crawl-delay`, which is capped at 60s so a `Crawl-delay: 86400`
   can't hang the tool. The last-known `Crawl-delay` is remembered, so the
   next run's `robots.txt` request is paced before the policy is re-read.
+  Loopback origins — `localhost`, any `127.x.x.x` address, `[::1]`, matched
+  literally with no DNS lookup — get none of the default wait: their floor
+  is **0 ms** with no jitter, because the pacing protects other people's
+  sites and a loopback server is your own. An explicit `--min-interval` and
+  any `Crawl-delay` still apply to them exactly as given.
   - *What is paced:* the `robots.txt` request, the page navigation, and the
     `domcontentloaded` retry after a `networkidle` timeout. Not paced: the
     page's own subresources (scripts, images, XHR), redirects the browser
@@ -895,6 +911,10 @@ default rather than asking you to promise you will.
   included — naming the exhausted window and when the next slot frees; the
   budget is shared by the CLI, the library and the MCP server through the
   same state directory, so switching entry points does not dodge it.
+  - *Loopback origins are exempt:* the budget protects third-party sites;
+    `localhost`, any `127.x.x.x` address and `[::1]` (literal match, no DNS
+    lookup) are the caller's own machine, so a render of one is neither
+    counted nor refused — no `--ignore-budget` needed for a dev server.
   - *Where state lives:* beside pacing and cooldown state, in
     `${XDG_CACHE_HOME:-~/.cache}/trawl/budget/` (or `$TRAWL_STATE_DIR`,
     library `stateDir`) — one small JSON file per origin (named by a hash

@@ -34,7 +34,7 @@ import {
 	crawlDelayMs,
 	robotsDenialMessage,
 } from "./robots.mjs";
-import { stateOrigin } from "./state.mjs";
+import { stateOrigin, isLoopbackOrigin } from "./state.mjs";
 
 // The public cookie surface, re-exported so a library caller can build the
 // list `{ cookies: [...] }` wants without a second entry point: the `exports`
@@ -799,8 +799,12 @@ export async function render(url, options = {}) {
 	// first robots or page request, so a refused call makes zero requests.
 	// `ignoreBudget` skips the refusal only: the attempt is still recorded,
 	// and no pacing or cooldown override turns the budget off. Non-http(s)
-	// URLs never touch it.
-	const budget = origin ? createBudgetStore({ stateDir }) : null;
+	// URLs never touch it — and neither does a loopback origin (#164): the
+	// budget protects third-party sites, and `localhost`, `127.0.0.0/8` and
+	// `[::1]` (literal match, no DNS) are the caller's own machine. A
+	// loopback render neither reserves a slot nor records an attempt.
+	const loopback = origin ? isLoopbackOrigin(origin) : false;
+	const budget = origin && !loopback ? createBudgetStore({ stateDir }) : null;
 	await budget?.reserve(origin, { enforce: !opts.ignoreBudget });
 
 	// Cross-run pacing (src/pacing.mjs): every explicit request this call
@@ -817,10 +821,13 @@ export async function render(url, options = {}) {
 					stateDir: opts.pacingStateDir ?? stateDir,
 					// Omitted → the pacer's own default floor plus its 0–500 ms
 					// jitter; an explicit value (validated above) is used
-					// exactly as given.
-					...(opts.minIntervalMs !== undefined && {
-						minIntervalMs: opts.minIntervalMs,
-					}),
+					// exactly as given. A loopback origin (#164) has no
+					// default floor: omitted means 0 ms, with no jitter — an
+					// explicit value and any Crawl-delay still gate as given,
+					// so the pacer itself stays in place.
+					minIntervalMs: loopback
+						? (opts.minIntervalMs ?? 0)
+						: opts.minIntervalMs,
 				})
 			: null;
 	// The Crawl-delay that applies to the page navigation, as learned from

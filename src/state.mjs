@@ -59,6 +59,28 @@ export function originDigest(origin) {
 	return createHash("sha256").update(origin).digest("hex").slice(0, 32);
 }
 
+// True for the loopback origins the etiquette limits do not exist to protect:
+// the page budget and the default pacing floor guard third-party sites, and a
+// loopback server is the caller's own (#164). Literal match only — `localhost`,
+// any `127.0.0.0/8` IPv4 literal (the URL parser normalises `127.1`-style
+// shorthands to dotted-quad), and `[::1]` (the URL parser keeps the brackets
+// in `hostname`). A name that merely *resolves* to loopback is not exempt: no
+// DNS lookup runs here, ever.
+export function isLoopbackOrigin(origin) {
+	try {
+		const host = new URL(origin).hostname;
+		if (host === "localhost" || host === "[::1]") return true;
+		const octets = host.split(".");
+		return (
+			octets.length === 4 &&
+			octets[0] === "127" &&
+			octets.slice(1).every((o) => /^\d{1,3}$/.test(o))
+		);
+	} catch {
+		return false;
+	}
+}
+
 // `<dir>/<digest>.json` and `<dir>/<digest>.lock` — the two files every
 // per-origin store keeps for one origin under its own subdirectory.
 export function stateFilesFor(dir, origin) {
