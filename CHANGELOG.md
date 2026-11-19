@@ -5,7 +5,13 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-11-19
+
+trawl now limits load by rate and volume instead of by `robots.txt`: reads
+are paced more slowly, capped by a shared per-origin page budget, and refused
+on block pages, while `robots.txt` becomes advisory unless you opt into
+`--respect-robots`. Several defaults change — read **Changed** before
+upgrading anything that runs trawl unattended.
 
 ### Changed
 
@@ -18,6 +24,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `robots.txt` request. `CLAUDE.md` and `AGENTS.md` now record the design
   rule, and a named test asserts a `Disallow: /` origin is fetched by default.
 
+- **A shared per-origin page budget (#141).** Every render reserves one
+  slot in a rolling per-origin budget of 60 pages per hour and 200 per day,
+  shared by the CLI, library and MCP entry points through the same state
+  directory. Past either limit a call is refused before any request is made
+  — `BudgetError`, CLI **exit 5** — naming the exhausted window and when the
+  next slot frees. If the budget state cannot be read or written the call is
+  refused too, with a distinct `BudgetUnavailableError`
+  (`TRAWL_BUDGET_UNAVAILABLE`). `--ignore-budget` (library
+  `ignoreBudget: true`) skips only the refusal; the attempt still counts.
+  Anything running more than 60 renders an hour against one origin will now
+  see exit 5.
+
+- **Slower default pacing (#141).** The default gap between requests to one
+  origin rises from 1,000 ms to 3,000 ms, plus 0–500 ms of random jitter.
+  An explicit `--min-interval` (library `minIntervalMs`) is used exactly as
+  given, with no jitter, and a larger `Crawl-delay` still wins. Back-to-back
+  runs against the same origin take noticeably longer than in 0.4.0.
+
+- **A main-frame `403` is now refused rather than written.** Previously the
+  body of the `403` response reached stdout (or `-o`) and the process exited
+  22; now nothing is written to stdout and an existing `-o` file is left
+  byte-identical, with the same exit code 22. Anyone piping `trawl` output
+  and tolerating exit 22 will see different bytes. `404`, `410` and other
+  `5xx` responses deliberately keep writing the body, so the output contract
+  is now asymmetric across 4xx statuses.
+
+  **`403` now starts a per-origin cooldown.** The next call to an origin that
+  returned `403` exits 4 without making any request, joining the same
+  failure streak as `429` and `503`. `--ignore-cooldown` overrides it, as
+  does any 2xx response resetting the streak. A page served with `200` that
+  matches the challenge predicate above is recorded as a `403`-equivalent for
+  the same purpose.
+
+- **`robots.txt` rule paths now honour `*` and `$`** (RFC 9309 §2.2.3).
+  A `*` in an `Allow`/`Disallow` path matches any run of characters,
+  including none, and spans `/`; a trailing `$` anchors the rule to the end
+  of the path (path plus query, as matched today). A `$` anywhere else stays
+  literal. Previously these were compared as literal characters, so a common
+  real-world rule like `Disallow: /*.pdf$` never matched.
+
+  **More paths now match a `Disallow` rule than before.** Because
+  `robots.txt` is now advisory by default (above), that changes nothing for a
+  default single-page read; under `--respect-robots` a site whose
+  `robots.txt` uses wildcards may have paths refused that earlier versions
+  fetched. This is the behaviour RFC 9309 requires.
+
+  Longest match still wins and `Allow` still breaks a tie, now comparing the
+  rule's pattern as written. Rules without `*` or `$` behave exactly as
+  before. Matching is bounded — a pathological pattern such as
+  `/*a*a*a*a*a*b` cannot hang the run. Percent-encoding normalisation
+  (§2.2.2) remains out of scope.
+
 - **The MCP scroll count lives in `_meta` (#153).** `fetch_page` and
   `fetch_links` return the number of scroll steps performed as
   `_meta.scrollsPerformed` instead of a bare top-level `scrollsPerformed`
@@ -26,6 +84,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The library's `render()` result is unchanged (`scrollsPerformed`).
 
 ### Added
+
+- **Scroll steps for lazy-loaded pages (#145).** Repeatable
+  `--scroll <bottom|css>` (library `render({ scroll, maxScrolls })`, MCP
+  `scroll` / `max_scrolls` on both tools) scrolls the loaded page before
+  extraction, after any clicks, each step followed by the settle. `bottom`
+  scrolls to the page's current bottom; anything else brings the first
+  matching element into view. `--max-scrolls` caps the list (default 3), and
+  an over-cap list is rejected before any request. A scroll handler that
+  tries to navigate away is aborted and fails the run with `ScrollError`.
+  The CLI reports the completed count on stderr, the library as
+  `scrollsPerformed`.
 
 - **Load controls on the MCP tools.** `fetch_page` and `fetch_links` now
   accept optional `wait_until` (`load` | `domcontentloaded` |
@@ -64,48 +133,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (a sign-in wall keeps exit 3) and after `--wait-for`/`--settle`, so the
   documented `--wait-until domcontentloaded --settle 15000` recipe still
   works for a challenge that resolves on its own. The detector fails open: a
-  miss renders the page exactly as before. The markup signals come from a
-  hand-written fixture rather than a captured live challenge; verifying
-  them is tracked in #149.
+  miss renders the page exactly as before. A byte-exact capture of a live
+  Cloudflare managed challenge now replays through `render()` in the test
+  suite (#149); it was served as HTTP `403`, so the `403` path below catches
+  it as well.
 
 - **`BlockedError` and `detectChallenge` are exported** from the package
   entry point, alongside the existing `CooldownError` and `AuthWallError`
   style errors, so library callers can catch a refused block page and reuse
   the predicate.
-
-### Changed
-
-- **A main-frame `403` is now refused rather than written.** Previously the
-  body of the `403` response reached stdout (or `-o`) and the process exited
-  22; now nothing is written to stdout and an existing `-o` file is left
-  byte-identical, with the same exit code 22. Anyone piping `trawl` output
-  and tolerating exit 22 will see different bytes. `404`, `410` and other
-  `5xx` responses deliberately keep writing the body, so the output contract
-  is now asymmetric across 4xx statuses.
-
-  **`403` now starts a per-origin cooldown.** The next call to an origin that
-  returned `403` exits 4 without making any request, joining the same
-  failure streak as `429` and `503`. `--ignore-cooldown` overrides it, as
-  does any 2xx response resetting the streak. A page served with `200` that
-  matches the challenge predicate above is recorded as a `403`-equivalent for
-  the same purpose.
-
-- **`robots.txt` rule paths now honour `*` and `$`** (RFC 9309 §2.2.3).
-  A `*` in an `Allow`/`Disallow` path matches any run of characters,
-  including none, and spans `/`; a trailing `$` anchors the rule to the end
-  of the path (path plus query, as matched today). A `$` anywhere else stays
-  literal. Previously these were compared as literal characters, so a common
-  real-world rule like `Disallow: /*.pdf$` never matched.
-
-  **More paths are now refused than before.** A site whose `robots.txt` uses
-  wildcards may now have paths blocked that earlier versions fetched. This is
-  the behaviour RFC 9309 requires; `--ignore-robots` still overrides it.
-
-  Longest match still wins and `Allow` still breaks a tie, now comparing the
-  rule's pattern as written. Rules without `*` or `$` behave exactly as
-  before. Matching is bounded — a pathological pattern such as
-  `/*a*a*a*a*a*b` cannot hang the run. Percent-encoding normalisation
-  (§2.2.2) remains out of scope.
 
 ## [0.4.0] - 2026-11-10
 
@@ -413,7 +449,7 @@ instead of an empty `<div id="root">`.
   The installed command is `trawl` either way — the scope affects the package
   name, not the binary.
 
-[Unreleased]: https://github.com/rjwalters/trawl/compare/v0.4.0...HEAD
+[0.5.0]: https://github.com/rjwalters/trawl/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rjwalters/trawl/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rjwalters/trawl/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rjwalters/trawl/releases/tag/v0.2.0
