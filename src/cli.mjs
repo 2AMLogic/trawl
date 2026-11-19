@@ -32,6 +32,7 @@ import {
 } from "./pacing.mjs";
 import {
 	AuthWallError,
+	BlockedError,
 	CooldownError,
 	FORMATS,
 	normalizeClickSteps,
@@ -128,9 +129,9 @@ Options:
                             in $TRAWL_STATE_DIR, else
                             \${XDG_CACHE_HOME:-~/.cache}/trawl
       --ignore-cooldown    Fetch even if the origin is cooling down after a
-                            429/503 (see exit code 4). Bypasses the refusal
-                            only: robots.txt and pacing still apply, and a
-                            new 429/503 is still recorded.
+                            403/429/503 block (see exit code 4). Bypasses the
+                            refusal only: robots.txt and pacing still apply,
+                            and a new block is still recorded.
       --profile <dir>      Persistent browser profile dir (cookies/
                             localStorage survive across runs); also read from
                             $TRAWL_PROFILE_DIR. Populate one with "trawl login"
@@ -190,16 +191,18 @@ Examples:
   trawl https://example.com/account --cookies cookies.txt \\
         --domain example.com
 
-Cooldowns: when a page answers 429 or 503, trawl records a per-origin
+Cooldowns: when a page answers 403, 429 or 503 — or the page served with 200
+carries an explicit anti-bot challenge signal — trawl records a per-origin
 cooldown in the same state directory — until its Retry-After (seconds or an
 HTTP-date), else 60s doubling per consecutive failure up to 1h. Until then,
 every trawl call to that origin is refused before any request is made. A 2xx
 page, or 24h without a failure, resets the backoff.
 
-Exit codes: 0 success, 22 page returned 4xx/5xx (as curl --fail), 3 page
-appears to be behind a login wall (see --no-auth-check / trawl login),
-4 origin is cooling down after a 429/503 (see --ignore-cooldown),
-1 usage or runtime error.
+Exit codes: 0 success, 22 page returned 4xx/5xx (as curl --fail) or was
+blocked — a main-frame 403, or a served-with-200 challenge, is refused with
+nothing on stdout and any --output file untouched, 3 page appears to be
+behind a login wall (see --no-auth-check / trawl login), 4 origin is cooling
+down after a block (see --ignore-cooldown), 1 usage or runtime error.
 `;
 
 const FLAG_ALIASES = {
@@ -1028,7 +1031,15 @@ if (isMainModule()) {
 		// react to differently: stop and ask a human to sign in, rather than
 		// retry or (worse) treat the login-wall body as real content.
 		// Likewise a cooldown refusal: wait until the stated time, don't retry.
+		// A block (a 403 denial, or a served-with-200 challenge) keeps curl
+		// --fail's 22 for the HTTP-level failure, with nothing on stdout.
 		process.exitCode =
-			err instanceof AuthWallError ? 3 : err instanceof CooldownError ? 4 : 1;
+			err instanceof BlockedError
+				? 22
+				: err instanceof AuthWallError
+					? 3
+					: err instanceof CooldownError
+						? 4
+						: 1;
 	}
 }

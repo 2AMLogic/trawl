@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { parseArgs } from "../src/cli.mjs";
-import { ScrollError, render } from "../src/render.mjs";
+import { BlockedError, ScrollError, render } from "../src/render.mjs";
 import { callTool } from "../src/mcp.mjs";
 import {
 	browserOpts as opts,
@@ -425,6 +425,33 @@ test("scrolling to a selector loads its lazy content", opts, async () => {
 		await s.close();
 	}
 });
+
+for (const [event, steps] of [
+	["click", { click: ["button"], scroll: ["#absent"] }],
+	["scroll", { scroll: ["bottom"] }],
+]) {
+	test(`a challenge revealed by a ${event} stops the render`, opts, async () => {
+		const s = await serve({
+			"/": `<!doctype html><title>Listing</title>
+				<button>Show more</button><main style="height: 300vh"></main>
+				<script>
+					window.addEventListener("${event}", () => {
+						document.title = "Just a moment...";
+						document.querySelector("main").id = "challenge-stage";
+					});
+				</script>`,
+		});
+		try {
+			// The click case must refuse before attempting the missing scroll target.
+			await assert.rejects(
+				render(s.url, { ...fast, ...steps, settle: 200, timeout: 3000 }),
+				BlockedError,
+			);
+		} finally {
+			await s.close();
+		}
+	});
+}
 
 test("a missing selector fails naming the step and selector", opts, async () => {
 	const s = await serve();
