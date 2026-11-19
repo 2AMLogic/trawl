@@ -4,6 +4,7 @@ description: "Validate internal cross-references — markdown links, CLAUDE.md p
 domain: repo
 type: command
 user-invocable: true
+disable-model-invocation: true
 ---
 
 # /repo:links — Link Checker

@@ -4,6 +4,7 @@ description: "Audit local branches and worktrees — find merged PRs, orphaned w
 domain: repo
 type: command
 user-invocable: true
+disable-model-invocation: true
 ---
 
 # /repo:branches — Branch & Worktree Hygiene

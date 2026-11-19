@@ -4,6 +4,7 @@ description: "Find unreferenced files — dead scripts, stale data, outputs with
 domain: repo
 type: command
 user-invocable: true
+disable-model-invocation: true
 ---
 
 # /repo:orphans — Orphan Finder

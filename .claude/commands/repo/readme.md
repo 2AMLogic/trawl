@@ -4,6 +4,7 @@ description: "Check README accuracy against actual directory contents and offer 
 domain: repo
 type: command
 user-invocable: true
+disable-model-invocation: true
 ---
 
 # /repo:readme — README Check

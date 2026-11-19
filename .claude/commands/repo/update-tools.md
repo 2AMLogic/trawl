@@ -78,12 +78,16 @@ inline → unknown resolution order, including the repo#96 "sidecar deleted by a
 pull" signature and the exact suggestion to append). Read C6 before implementing
 this step; do not re-derive the rules from what a given tool happens to do.
 
+When running from a linked worktree (which never has the gitignored sidecar),
+also check the primary checkout's sidecar — `git rev-parse --git-common-dir`
+locates it — before treating the source as unknown.
+
 Two things are *this command's* behavior rather than the contract's, so they
 stay here: an unresolved source means **skip to the GitHub check in step 2**
 (not an error), and the repo#96 signature gets its own distinct report row —
 see step 3.
 
-[contract]: https://github.com/rjwalters/repo/blob/main/INSTALLER-CONTRACT.md
+[contract]: https://github.com/2AMLogic/repo/blob/main/INSTALLER-CONTRACT.md
 
 **kicad-tools does not conform to C5/C6 — resolve its shape directly instead
 of via the sidecar ladder.** `.kct/install-metadata.json` carries `kct_version`
@@ -121,8 +125,9 @@ resolves to a directory with no git remote **and** `install-metadata.json`
 names `package: @rjwalters/squad`:
 
 - Resolve the GitHub slug from a repository URL recorded in the metadata if one
-  is present; otherwise infer it from the package name (`@scope/name` →
-  `scope/name`, i.e. `rjwalters/squad`) and say it is inferred. The tool is then
+  is present; otherwise resolve it from a known-package map (`@rjwalters/squad`
+  → `2AMLogic/squad`) and say it is inferred — never assume the npm scope
+  equals the GitHub owner (a renamed package keeps its old scope). The tool is then
   **not** UNKNOWN: take step 2's GitHub version-file fallback with that slug.
 - Commit drift is not computable on this path (squad also records
   `"commit": "unknown"`); step 3 reports it as such.
@@ -226,6 +231,26 @@ git -C <source> show origin/HEAD:VERSION 2>/dev/null
 git -C <source> log --oneline <installed-commit>..origin/HEAD | wc -l
 ```
 
+**Verify the slug the remote gives you before using it — a repo move leaves
+the old URL redirecting, and nothing else in this step notices.** The
+`<owner>/<repo>` the version check (and any issue filing in `/repo:followups`)
+reads comes from the source clone's `origin` remote. When the upstream repo
+has moved owners, the old remote URL still works — `git fetch` succeeds
+through the redirect — so the check would silently compare and file against
+the stale owner forever. After reading the slug off the remote, ask the API
+what it resolves to:
+
+```bash
+gh api repos/<owner>/<repo> --jq .full_name
+```
+
+When the returned `full_name` is a different `owner/name` than the slug read
+off the remote, use the returned `full_name` for the version check and any
+issue filing, and add a report row naming the fix — e.g.
+`source clone remote is stale — git -C <source> remote set-url origin <new-url>`.
+Report only: this command does not rewrite the consumer's source-clone remote
+itself.
+
 **Record three numbers per non-dev tool, not one — version drift, commit
 drift, and (for a tool that records per-component versions) its
 frozen-component count (step 1).** Version equality alone systematically
@@ -285,7 +310,7 @@ source HEAD is the exact failure this comparison exists to remove.
 If the source clone no longer exists, fall back to the GitHub API — **read the
 version file on the default branch first, tags/releases only as a last
 resort.** Tags routinely lag the version file by a wide margin (observed on
-`rjwalters/loom`: latest tag `v0.18.0` against `VERSION` `0.18.121` at
+`2AMLogic/loom`: latest tag `v0.18.0` against `VERSION` `0.18.121` at
 `origin/HEAD` — 121 patch versions of drift) because installers read
 `VERSION` / `package.json` / `pyproject.toml`, never tags, so a tags-first
 comparison would confidently report a version dozens of releases stale as
@@ -511,7 +536,7 @@ git -C <source> pull --ff-only
 installed copy`, report the tool as a **legacy (pre-receipt) install needing
 manual adoption** — squad's installer cannot upgrade a pre-receipt install
 (e.g. v0.1.0) until it is adopted — and point the operator at the upstream
-migration issue in `rjwalters/squad`. Do not report it as a generic failure,
+migration issue in `2AMLogic/squad`. Do not report it as a generic failure,
 and do not retry or force it.
 
 **Prefer a tool's C7 resync over its installer.** [Contract][contract] C7 gives
@@ -754,12 +779,12 @@ reinstall over an existing install, so `<source>/scripts/install-anvil.sh
 <this-repo>` and `<source>/scripts/install-kct.sh <this-repo>` both succeed on
 a second run and need no resync-equivalent or destructive-fallback split:
 
-- **Anvil** (`rjwalters/anvil` `scripts/install-anvil.sh`, checked at `8302890`):
+- **Anvil** (`2AMLogic/anvil` `scripts/install-anvil.sh`, checked at `8302890`):
   Stage 3's "active-install guard" only sets `UPGRADE=true` when `.anvil/`
   already exists and proceeds — no exit, no confirmation gate bypassed by
   `-y`. The installer's own `--help` text tells consumers to "re-run
   `install-anvil.sh .` from the anvil checkout" to upgrade.
-- **kicad-tools** (`rjwalters/kicad-tools` `scripts/install-kct.sh`, checked at
+- **kicad-tools** (`2AMLogic/kicad-tools` `scripts/install-kct.sh`, checked at
   `87561cf`): the header comment states outright "Re-running the installer is
   the upgrade/idempotency path: a second run with the same args adds no
   duplicate CLAUDE.md block and no duplicate dependency" — Stage 5 explicitly

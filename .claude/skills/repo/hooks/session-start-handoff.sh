@@ -2,7 +2,7 @@
 # session-start-handoff.sh - SessionStart hook that surfaces a pending
 # /repo:handoff note at the start of a Claude Code session.
 #
-# Part of Repo Skills (https://github.com/rjwalters/repo), installed by
+# Part of Repo Skills (https://github.com/2AMLogic/repo), installed by
 # install.sh into .claude/skills/repo/hooks/ and wired into the consumer repo's
 # .claude/settings.json under hooks.SessionStart (matchers "startup" and
 # "resume").

@@ -1,5 +1,5 @@
 <!-- BEGIN REPO-SKILLS -->
-This repository has [Repo Skills](https://github.com/rjwalters/repo) v0.26.1 installed —
+This repository has [Repo Skills](https://github.com/2AMLogic/repo) v0.26.11 installed —
 general repository hygiene and environment commands invoked as `/repo:<command>`. Run
 `/repo:help` for the command list, or see `.claude/skills/repo/SKILL.md` for the full
 guide. Hygiene commands apply safe, reversible fixes by default and report each
@@ -65,6 +65,18 @@ fails if the refusal comes back.
 Tests that need a browser skip cleanly when none is present, so a green local
 run does not always mean the render path was exercised — CI installs Chromium
 to keep them meaningful.
+
+**A PR that changes user-visible behaviour ships its `CHANGELOG.md`
+`[Unreleased]` entry in the same PR.** A `feat:`/`fix:` change to CLI flags,
+defaults, exit codes, or the library or MCP surface adds or updates an
+`[Unreleased]` entry, creating the section if it does not exist yet;
+internal-only changes need none. If a PR changes behaviour an existing
+`[Unreleased]` entry already describes, edit that entry rather than adding a
+contradicting one, and keep a single heading per type (`### Changed` etc.).
+For Judge this is a review finding: a user-visible behaviour change with no
+matching changelog edit does not pass review. 0.5.0 shipped missing entries
+for two of its biggest changes (#141, #145) and carried two entries later
+PRs had made untrue, all caught by hand at release time (#161).
 
 <!-- BEGIN LOOM ORCHESTRATION -->
 This repository uses [Loom](https://github.com/rjwalters/loom) for AI-powered development orchestration — see the Loom repository for the full guide (roles, labels, worktrees, configuration). When installed, Loom also writes a locally-substituted copy of that guide to `.loom/CLAUDE.md`.

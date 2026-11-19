@@ -1,6 +1,6 @@
 ---
 name: repo-org-policy
-description: "Preview or install canonical rjwalters/repo preferences into a client's GitHub owner/.github repository"
+description: "Preview or install canonical 2AMLogic/repo preferences into a client's GitHub owner/.github repository"
 metadata:
   domain: "repo"
 ---
@@ -17,7 +17,7 @@ metadata:
 # $repo-org-policy — Organization Preferences
 
 Manage an organization's policy from any of its client repositories. The
-authoritative files live in **rjwalters/repo**, on its default branch:
+authoritative files live in **2AMLogic/repo**, on its default branch:
 
 - `policies/default.json`: shared defaults.
 - `policies/organizations/<lowercase-owner>.json`: optional owner overrides.
@@ -132,6 +132,11 @@ plan again with --create-repository public (or private)
 | `appears absent rather than hidden` | Evidence favors creation, but GitHub's 404 conflation means this is evidence, not proof. |
 | `is absent or inaccessible, and this token cannot tell which` | A hidden repository cannot be ruled out (no admin on the sibling, or the sibling itself is invisible, or a third-party personal account). |
 | `is absent or inaccessible, and the access check was inconclusive` | The check itself could not answer (the account or sibling could not be read). |
+
+A 403 on `OWNER/.github` is a different outcome and is never treated as absence.
+`plan` and `apply` stop with `GitHub refused access to OWNER/.github (HTTP 403)`,
+say the repository is not known to be absent, and say no change was made. No
+create-repository plan is offered; fix the token's access and run again.
 
 Only the first verdict is evidence for creating the repository. For the other
 two, establish access before passing `--create-repository`; the message names
@@ -284,5 +289,5 @@ temporary client exception afterward. It does not waive CI or breaking-change
 review.
 
 For source layout, override examples, and validation, read `policies/README.md`
-in rjwalters/repo. Native reference:
+in 2AMLogic/repo. Native reference:
 https://docs.renovatebot.com/config-presets/#grouporganization-level-presets
