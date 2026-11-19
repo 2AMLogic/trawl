@@ -90,8 +90,8 @@ Every candidate has to land in *some* repo. Build the routing table by reusing
   exists anywhere on this machine, Repo Skills already writes its own repo slug
   into every copy of itself it installs: the installed
   `.claude/skills/repo/SKILL.md`'s own contract link and the `CLAUDE.md`
-  install block (`install.sh:786`) both carry the literal
-  `https://github.com/rjwalters/repo`. When the swept metadata path is
+  install block (written by `install.sh`) both carry the literal
+  `https://github.com/2AMLogic/repo`. When the swept metadata path is
   `.claude/skills/repo/install-metadata.json`, resolve its target from that
   literal directly and skip the sidecar → legacy → unknown ladder below
   entirely — there is no source clone to look for, and this target is never
@@ -99,12 +99,12 @@ Every candidate has to land in *some* repo. Build the routing table by reusing
 
   ```bash
   grep -oE 'github\.com/[^)/]+/[^)/]+' .claude/skills/repo/SKILL.md | head -1 \
-    || echo "github.com/rjwalters/repo"   # fallback constant, mirrors install.sh:786
+    || echo "github.com/2AMLogic/repo"   # fallback constant, mirrors the CLAUDE.md block install.sh writes
   ```
 
   This is intentionally **not fork-aware** — a fork of Repo Skills that renames
   itself without also editing its own copy of `SKILL.md` still resolves to
-  `rjwalters/repo` — matching the same non-fork-aware literal `install.sh:786`
+  `2AMLogic/repo` — matching the same non-fork-aware literal `install.sh`
   already writes into every consumer's `CLAUDE.md`. That is a pre-existing
   limitation of how Repo Skills documents itself, not a new gap introduced by
   this short-circuit.
@@ -116,7 +116,7 @@ Every candidate has to land in *some* repo. Build the routing table by reusing
   not an error. Do not re-derive the order from what a given tool happens to
   do — read C6.
 
-  [contract]: https://github.com/rjwalters/repo/blob/main/INSTALLER-CONTRACT.md
+  [contract]: https://github.com/2AMLogic/repo/blob/main/INSTALLER-CONTRACT.md
 
   **kicad-tools does not conform to C6.** `.kct/install-metadata.json` carries
   `kct_version` / `kct_commit` and no sidecar — it always records `source_mode`
@@ -133,8 +133,9 @@ Every candidate has to land in *some* repo. Build the routing table by reusing
   `git -C <source> config --get remote.origin.url` yields nothing) **and**
   `.claude/skills/squad/install-metadata.json` names `package: @rjwalters/squad`,
   resolve the slug from a recorded repository URL if the metadata has one, else
-  from the package name (`@scope/name` → `scope/name`, i.e. `rjwalters/squad`),
-  stating that it is inferred. The target is then not UNKNOWN. If `package` is
+  from a known-package map (`@rjwalters/squad` → `2AMLogic/squad`), stating
+  that it is inferred — never assume the npm scope equals the GitHub owner (a
+  renamed package keeps its old scope). The target is then not UNKNOWN. If `package` is
   absent or names another package, it stays UNKNOWN. Full detail:
   `/repo:update-tools` step 1.
 
@@ -431,10 +432,10 @@ FOLLOW-UPS FROM THIS SESSION
 ============================
 | # | Target repo        | Vis     | Title                              | Dedup                    |
 |---|--------------------|---------|------------------------------------|--------------------------|
-| 1 | rjwalters/repo     | public  | orphans check misses nested dirs   | NEW                      |
-| 2 | rjwalters/loom     | public  | worktree.sh fails on detached HEAD | near #217 (issue)        |
-| 3 | rjwalters/repo     | public  | followups dedup also matches PRs   | in flight: #99 (PR)      |
-| 4 | rjwalters/anvil    | public  | (docs gap) …                       | NEW                      |
+| 1 | 2AMLogic/repo      | public  | orphans check misses nested dirs   | NEW                      |
+| 2 | 2AMLogic/loom      | public  | worktree.sh fails on detached HEAD | near #217 (issue)        |
+| 3 | 2AMLogic/repo      | public  | followups dedup also matches PRs   | in flight: #99 (PR)      |
+| 4 | 2AMLogic/anvil     | public  | (docs gap) …                       | NEW                      |
 | 5 | UNKNOWN            | unknown | kicad-tools DRC false positive     | ask — no slug            |
 ```
 
@@ -463,8 +464,8 @@ FOLLOW-UPS FROM THIS SESSION
 ============================
 | # | Target repo        | Vis     | Title                              | Dedup                   | Hold                    |
 |---|--------------------|---------|------------------------------------|--------------------------|-------------------------|
-| 1 | rjwalters/repo     | public  | orphans check misses nested dirs   | NEW                     | HOLD — source firewall  |
-| 2 | rjwalters/repo     | private | internal note about this repo      | NEW                     | —                       |
+| 1 | 2AMLogic/repo      | public  | orphans check misses nested dirs   | NEW                     | HOLD — source firewall  |
+| 2 | 2AMLogic/repo      | private | internal note about this repo      | NEW                     | —                       |
 ```
 
 A row targeting this repo, or any row whose `Vis` is `private`, is never held

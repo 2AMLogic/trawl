@@ -96,7 +96,7 @@ so `--status`, `--remove`, and any later host-posture audit (e.g.
 filename:
 
 ```
-# Installed by $repo-sudo (rjwalters/repo) — see .claude/commands/repo/sudo.md
+# Installed by $repo-sudo (2AMLogic/repo) — see .claude/commands/repo/sudo.md
 ```
 
 Two scopes are supported:
@@ -334,7 +334,7 @@ TMP="$(mktemp)"
 
 # Header first (discoverability), then the grant line for the chosen scope:
 {
-  echo "# Installed by $repo-sudo (rjwalters/repo) — see .claude/commands/repo/sudo.md"
+  echo "# Installed by $repo-sudo (2AMLogic/repo) — see .claude/commands/repo/sudo.md"
   # Default (ALL):
   echo "${USER_NAME} ALL=(ALL) NOPASSWD: ALL"
   # --scoped instead:

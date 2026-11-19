@@ -4,6 +4,7 @@ description: "Check the environment's browser-automation stack (Browser Use CLI,
 domain: repo
 type: command
 user-invocable: true
+disable-model-invocation: true
 ---
 
 # /repo:browser — Browser-Automation Environment Health

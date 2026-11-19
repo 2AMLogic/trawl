@@ -367,14 +367,14 @@ check declares, tagged with the check's name so the report says where the rule
 came from.
 
 ```
-REPO:SCRUB — rjwalters/repo
+REPO:SCRUB — 2AMLogic/repo
 ===========================
 CRITICAL  none
 
 WARN      3 findings at HEAD
   identity          docs/runbook.md:41        removable          third-party address — not yours to publish
   cloud-resource    .anvil/config.example:8   removable*         32-hex near "account_id" (context: promoted)
-                    * vendored tree — a local edit reverts on reinstall; fix upstream in rjwalters/anvil,
+                    * vendored tree — a local edit reverts on reinstall; fix upstream in 2AMLogic/anvil,
                       or pin the path in .claude/skills/repo/resync-ignore to declare it repo-owned
   allowlist         .repo/scrub.toml:12       removable          [local: allowlist-drift] paths= no longer matches where value occurs
 

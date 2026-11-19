@@ -39,7 +39,7 @@ costs.
 | [[update-tools]] | Check installed tool packages (Loom, Anvil, …) against their sources and offer updates |
 | [[deps]] | Third-party dependency currency — reconcile organization policy, Dependabot-first setup with cooldown (Renovate opt-in), and bot PRs; report-only under `--check` |
 | [[optimize-ci]] | Audit GitHub Actions for wasted CI minutes — change-relevance path filtering (required-check safe), cache keys, superseded runs; ranked by measured savings, report-only unless `--apply`. Its deterministic half is `scripts/repo/repo-optimize-ci.py` (installed to `.claude/skills/repo/scripts/`) |
-| [[org-policy]] | Preview or deploy canonical rjwalters/repo preferences to the client's GitHub owner/.github repository through a policy PR |
+| [[org-policy]] | Preview or deploy canonical 2AMLogic/repo preferences to the client's GitHub owner/.github repository through a policy PR |
 | [[decide]] | Put operator decisions to the operator as ranked options — best to worst, each with why — so they can answer with a number |
 | [[followups]] | Capture follow-on work from this session and file it as issues — here or in upstream tool repos, always confirmed first |
 | [[branches]] | Branch & worktree hygiene — merged PRs, orphaned branches, stale worktrees |
@@ -378,7 +378,7 @@ one-line summary; `--source` / `--target` override the resolved paths.
 Hook wiring in `.claude/settings.json`, the `CLAUDE.md` block, and `.gitignore`
 belong to `install.sh`, not to a refresh — re-run the installer if those need
 updating. This split is requirement **C7** of the normative
-[tool-package installer contract](https://github.com/rjwalters/repo/blob/main/INSTALLER-CONTRACT.md),
+[tool-package installer contract](https://github.com/2AMLogic/repo/blob/main/INSTALLER-CONTRACT.md),
 which [[update-tools]] follows for every tool in the family.
 
 ### Repo-owned files (`.claude/skills/repo/resync-ignore`)
