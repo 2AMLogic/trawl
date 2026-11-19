@@ -4,9 +4,10 @@ name: Release
 # Release checks out the released tag and publishes it to npm with an OIDC
 # token — no stored credential, signed provenance, no interactive 2FA.
 # Requires the one-time trusted-publisher registration on npmjs.com
-# (repository 2AMLogic/trawl, workflow filename release.yml); until that is
-# done the publish step fails and the fallback is the manual `npm publish`
-# documented in .repo/release-policy.md (seam: post-summary).
+# (repository 2AMLogic/trawl, workflow filename release.yml, environment
+# npm-publish); until that is done the publish step fails and the fallback is
+# the manual `npm publish` documented in .repo/release-policy.md
+# (seam: post-summary).
 on:
   release:
     types: [published]
