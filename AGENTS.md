@@ -20,6 +20,18 @@ decision, recorded in an issue, before it ships. See
 "default flags fetch a page on a Disallow: / origin" in `tests/render.test.mjs`
 fails if the refusal comes back.
 
+## Changelog rule: user-visible changes ship their entry
+
+**A PR that changes user-visible behaviour (CLI flags, defaults, exit codes,
+library or MCP surface) adds or updates a `CHANGELOG.md` `[Unreleased]` entry
+in the same PR, creating the section if absent; internal-only changes need
+none.** If a PR changes behaviour an existing `[Unreleased]` entry describes,
+edit that entry — the section must not contradict itself — and keep a single
+heading per type (`### Changed` etc.). For Judge, a user-visible behaviour
+change with no matching changelog edit is a review finding. Recorded after
+0.5.0 shipped missing and stale `[Unreleased]` entries, caught only by hand
+at release time (#161); full rule in `CLAUDE.md` → Project conventions.
+
 <!-- BEGIN LOOM ORCHESTRATION (AGENTS) -->
 This repository uses [Loom](https://github.com/rjwalters/loom) for AI-powered development orchestration (dual-runtime: Claude Code reads `CLAUDE.md`; OpenAI Codex CLI and other AGENTS.md-aware runtimes read this file). See the Loom repository for the full guide (roles, labels, worktrees, configuration). When installed, Loom also writes a locally-substituted copy of the runtime-neutral guide to `.loom/AGENTS.md`.
 
