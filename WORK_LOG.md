@@ -5,6 +5,13 @@ Maintained by the Loom Guide role; entries are appended automatically.
 
 ### 2026-11-19
 
+- **PR #159**: docs: state the shipped per-origin page budget in agent conventions
+- **PR #157**: test: give scroll seam tests an existing executablePath so they run without Chromium
+- **PR #155**: Move MCP scroll count into _meta; drop dead bottom-timeout wording; name message-less step failures
+- **Issue #156** (closed): CLAUDE.md still says the per-origin page budget is "planned, not built"
+- **Issue #154** (closed): Scroll seam tests fail instead of skipping on a Chromium-less host
+- **Issue #153** (closed): Scroll-step polish: MCP result metadata field, unreachable bottom-timeout message, implicit scrollsPerformed invariant
+- **Issue #152** (closed): Is a Cloudflare managed challenge ever served with HTTP 200? (detectChallenge's 200 branch is unproven in the wild)
 - **PR #151**: test: replay a live Cloudflare managed-challenge capture through render()
 - **PR #150**: feat: add scroll steps so lazy-loaded listings can be read past the first screen
 - **PR #148**: feat: enforce a shared per-origin page budget and slower default pacing
