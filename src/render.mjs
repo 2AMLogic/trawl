@@ -123,6 +123,20 @@ export class ClickError extends Error {
 	}
 }
 
+// Thrown when a scroll step cannot run: its selector never matched within
+// the timeout, the page would not scroll, or the scroll tried to navigate
+// the page away. `step` counts the caller's scroll steps from 1, the same
+// way ClickError's `step` counts click steps; `selector` carries the step's
+// target ("bottom" or the CSS selector as given).
+export class ScrollError extends Error {
+	constructor(message, { step, selector } = {}) {
+		super(message);
+		this.name = "ScrollError";
+		this.step = step;
+		this.selector = selector;
+	}
+}
+
 // Accepts `click` as a string, or an array of strings and/or
 // `{ selector, waitFor }` objects, and returns `[{ selector, waitFor }]`.
 // Pure, so the CLI and library callers fail the same way on bad input, and
@@ -153,6 +167,50 @@ export function normalizeClickSteps(click) {
 	});
 }
 
+// One scroll step: `"bottom"` scrolls the document to its current bottom;
+// anything else is a CSS selector whose first match is brought into view.
+// Pure, so the CLI, the MCP server and library callers fail the same way on
+// bad input, and before any network or browser work.
+export function normalizeScrollSteps(scroll) {
+	if (scroll === undefined || scroll === null) return [];
+	const list = Array.isArray(scroll) ? scroll : [scroll];
+	return list.map((step, i) => {
+		if (typeof step !== "string" || step.trim() === "") {
+			throw new Error(
+				`scroll step ${i + 1}: expected "bottom" or a non-empty CSS selector`,
+			);
+		}
+		return { target: step.trim() === "bottom" ? "bottom" : step };
+	});
+}
+
+// The cap on scroll steps when the caller didn't set one. Low on purpose:
+// each step costs a settle pause, and scrolling on is the caller's explicit
+// request, step by step — not something to run until exhaustion.
+export const DEFAULT_MAX_SCROLLS = 3;
+
+// Validate the scroll surface as a whole: steps normalized, the cap a
+// non-negative integer, and no list longer than the cap. Returns
+// `{ steps, maxScrolls }` with the default cap applied — pure, so the CLI and
+// the MCP server preflight exactly what render() enforces. A cap with no
+// steps is valid and bounds nothing: it requests zero steps.
+export function normalizeScrollOptions({ scroll, maxScrolls } = {}) {
+	const steps = normalizeScrollSteps(scroll);
+	const cap = maxScrolls ?? DEFAULT_MAX_SCROLLS;
+	if (!Number.isInteger(cap) || cap < 0) {
+		throw new Error(
+			`maxScrolls must be a non-negative integer, got ${String(maxScrolls)}`,
+		);
+	}
+	if (steps.length > cap) {
+		throw new Error(
+			`scroll lists ${steps.length} steps but maxScrolls is ${cap}; ` +
+				"raise maxScrolls or drop steps",
+		);
+	}
+	return { steps, maxScrolls: cap };
+}
+
 // The least a click step pauses after its click (and `waitFor`), whatever
 // `settle` says. Click handlers often navigate on a short timer or after a
 // microtask hop; this floor gives such a navigation time to reach the route
@@ -164,26 +222,32 @@ const CLICK_SETTLE_FLOOR_MS = 250;
 const isTimeout = (err) =>
 	err?.name === "TimeoutError" || /Timeout .*exceeded/.test(err?.message ?? "");
 
-// Press each step's element in order, on the page that is already loaded.
-// A click only presses an element already on the page: a click that tries to
-// load a different top-level document (a link, a form submit, a popup or
-// `target=_blank`, a script that sets `location` a moment later) is aborted
-// before the request leaves and fails the run, so a run still makes exactly
-// one page request and every request trawl makes stays paced.
+// The context-level navigation guard shared by click and scroll steps: a
+// step that tries to load a different top-level document (a link, a form
+// submit, a popup or `target=_blank`, a script that sets `location` a moment
+// later) is aborted before the request leaves and fails the run, so a run
+// still makes exactly one page request and every request trawl makes stays
+// paced.
 //
 // The route stays on the context for the rest of the run, through
-// extraction and the screenshot, until the context closes: a handler can
-// navigate any number of milliseconds after its click, and a guard that ended
-// with the clicks would let that request out and hand back the other page.
-// Returns `checkNavigation`, which the caller runs once more right before it
-// returns results, so a navigation stopped at any point after a click fails
-// the run. (Routing turns Playwright's HTTP cache off for the requests the
-// page makes after this point; the document and its first subresources have
+// extraction and the screenshot, until the context closes: an interaction
+// can navigate any number of milliseconds after it ran, and a guard that
+// ended with the steps would let that request out and hand back the other
+// page. The caller runs `checkNavigation` once more right before it returns
+// results, so a navigation stopped at any point after any step fails the
+// run. (Routing turns Playwright's HTTP cache off for the requests the page
+// makes after this point; the document and its first subresources have
 // already loaded, so that costs close to nothing.)
-async function runClickSteps(page, context, steps, { timeout, settle }) {
+//
+// `steps` is the combined click-then-scroll descriptor list; each entry
+// carries the `index`/`count` it reports itself with (its own list's, so
+// "scroll step 1 of 2" counts --scroll flags the way "click step 2 of 3"
+// counts --click flags).
+function installNavGuard(context, steps) {
+	// The step now running (1-based across the combined list), and the first
+	// top-level navigation it set off: its URL and the step that was running
+	// when it was stopped.
 	let current = 0;
-	// The first top-level navigation a click set off: its URL and the step
-	// that was running when it was stopped.
 	let blocked = null;
 	const handler = (route) => {
 		const request = route.request();
@@ -207,21 +271,45 @@ async function runClickSteps(page, context, steps, { timeout, settle }) {
 	const checkNavigation = () => {
 		if (!blocked) return;
 		const { url, step } = blocked;
-		const { selector, waitFor } = steps[step - 1];
+		const s = steps[step - 1] ?? {};
+		if (s.kind === "scroll") {
+			throw new ScrollError(
+				`scroll step ${s.index} of ${s.count} ("${s.target}"): the ` +
+					`scroll tried to navigate to ${url}; trawl scrolls only to ` +
+					"reveal content on the loaded page — fetch that URL directly " +
+					"instead",
+				{ step: s.index, selector: s.target },
+			);
+		}
+		const { selector, waitFor } = s;
 		throw new ClickError(
-			`click step ${step} of ${steps.length} ("${selector}"): the click ` +
+			`click step ${s.index} of ${s.count} ("${selector}"): the click ` +
 				`tried to navigate to ${url}; trawl clicks only to reveal content ` +
 				"on the loaded page — fetch that URL directly instead",
-			{ step, selector, waitFor },
+			{ step: s.index, selector, waitFor },
 		);
 	};
+	return {
+		checkNavigation,
+		// Mark the combined-list step now executing, so a navigation blocked
+		// while it runs is reported against it.
+		begin: (step) => {
+			current = step;
+		},
+		route: () => context.route("**/*", handler),
+	};
+}
 
-	await context.route("**/*", handler);
+// Press each step's element in order, on the page that is already loaded.
+// A click only presses an element already on the page: a click that tries to
+// load a different top-level document is aborted before the request leaves
+// and fails the run, through the shared nav guard above.
+async function runClickSteps(page, guard, steps, { timeout, settle }) {
 	const ms = timeout > 0 ? `${timeout}ms` : "the timeout";
 	for (let i = 0; i < steps.length; i++) {
 		const { selector, waitFor } = steps[i];
 		const step = i + 1;
-		current = step;
+		guard.begin(step);
 		const label = `click step ${step} of ${steps.length} ("${selector}")`;
 		// The first match in document order, so a selector that matches
 		// several buttons presses one instead of tripping strict mode.
@@ -236,7 +324,7 @@ async function runClickSteps(page, context, steps, { timeout, settle }) {
 				{ step, selector, waitFor },
 			);
 		}
-		checkNavigation();
+		guard.checkNavigation();
 		if (waitFor) {
 			try {
 				await page
@@ -246,7 +334,7 @@ async function runClickSteps(page, context, steps, { timeout, settle }) {
 			} catch (err) {
 				// A navigation stopped while waiting is the better explanation
 				// for a `waitFor` that never appeared.
-				checkNavigation();
+				guard.checkNavigation();
 				if (!isTimeout(err)) throw err;
 				throw new ClickError(
 					`${label}: "${waitFor}" did not appear within ${ms} after the click`,
@@ -257,10 +345,55 @@ async function runClickSteps(page, context, steps, { timeout, settle }) {
 		await page.waitForTimeout(Math.max(settle, CLICK_SETTLE_FLOOR_MS));
 		// Again after the wait and settle: a handler that navigates a
 		// moment after the click must fail the run, never pass silently.
-		checkNavigation();
+		guard.checkNavigation();
 	}
-	checkNavigation();
-	return checkNavigation;
+	guard.checkNavigation();
+}
+
+// Scroll the loaded page step by step, each followed by the render settle
+// delay: a lazy loader appends more rows once it sees the page bottom, so
+// the next `bottom` step has to come after the appended rows have moved it.
+// `"bottom"` scrolls the document to its current bottom; anything else is a
+// CSS selector whose first match is brought into view — a target already in
+// view completes without scrolling and still counts as a performed step. A
+// step that cannot run (a selector that never matched within `timeout`)
+// fails the run naming the step and selector; one that would load a
+// different top-level document is stopped before the request leaves and
+// fails the run, exactly as a click would.
+async function runScrollSteps(page, guard, steps, stepOffset, { timeout, settle }) {
+	const ms = timeout > 0 ? `${timeout}ms` : "the timeout";
+	for (let i = 0; i < steps.length; i++) {
+		const { target, index, count } = steps[i];
+		guard.begin(stepOffset + i + 1);
+		const label = `scroll step ${index} of ${count} ("${target}")`;
+		try {
+			if (target === "bottom") {
+				await page.evaluate(() =>
+					window.scrollTo(0, document.documentElement.scrollHeight),
+				);
+			} else {
+				// The first match in document order, like a click's locator.
+				await page
+					.locator(target)
+					.first()
+					.scrollIntoViewIfNeeded({ timeout });
+			}
+		} catch (err) {
+			if (!isTimeout(err)) throw err;
+			throw new ScrollError(
+				target === "bottom"
+					? `${label}: the page did not scroll within ${ms}`
+					: `${label}: no element matched within ${ms}`,
+				{ step: index, selector: target },
+			);
+		}
+		guard.checkNavigation();
+		await page.waitForTimeout(settle);
+		// Again after the settle: a handler that navigates a moment
+		// after the scroll must fail the run, never pass silently.
+		guard.checkNavigation();
+	}
+	guard.checkNavigation();
 }
 
 // Heuristics only — deliberately biased toward false positives over silently
@@ -506,8 +639,15 @@ export async function render(url, options = {}) {
 			: validateMinInterval(opts.minIntervalMs, "minIntervalMs");
 
 	// Validated here for the same reason: a malformed click list is a caller
-	// bug, and must not cost a robots.txt request or a browser launch.
+	// bug, and must not cost a robots.txt request or a browser launch. The
+	// scroll surface gets the same treatment: a malformed or over-cap list,
+	// or an invalid cap, is rejected before the first request. `maxScrolls`
+	// alone (no `scroll`) is valid — a cap without steps requests zero steps.
 	const clickSteps = normalizeClickSteps(opts.click);
+	const { steps: scrollSteps } = normalizeScrollOptions({
+		scroll: opts.scroll,
+		maxScrolls: opts.maxScrolls,
+	});
 
 	const userAgent = opts.userAgent ?? (await defaultUserAgent());
 
@@ -813,14 +953,46 @@ export async function render(url, options = {}) {
 
 		// Click steps run after load, `waitForSelector` and `settle`, in the
 		// order given; each waits for its element to be visible, clicks it,
-		// waits for its own `waitFor` if any, then `settle` again.
-		let checkClickNavigation = null;
-		if (clickSteps.length > 0) {
-			checkClickNavigation = await runClickSteps(page, context, clickSteps, {
-				timeout: opts.timeout,
-				settle,
-			});
-			await checkAuth();
+		// waits for its own `waitFor` if any, then `settle` again. Scroll
+		// steps then run on the same loaded page, each followed by `settle`
+		// again, so lazy content is in the DOM before extraction. One
+		// navigation guard covers both, and stays on through extraction and
+		// the screenshot; a blocked navigation names whichever step was
+		// running when its request was stopped.
+		let checkInteractionNav = null;
+		if (clickSteps.length > 0 || scrollSteps.length > 0) {
+			const clickDescriptors = clickSteps.map((c, i) => ({
+				kind: "click",
+				...c,
+				index: i + 1,
+				count: clickSteps.length,
+			}));
+			const scrollDescriptors = scrollSteps.map((s, i) => ({
+				kind: "scroll",
+				...s,
+				index: i + 1,
+				count: scrollSteps.length,
+			}));
+			const guard = installNavGuard(context, [
+				...clickDescriptors,
+				...scrollDescriptors,
+			]);
+			await guard.route();
+			if (clickSteps.length > 0) {
+				await runClickSteps(page, guard, clickSteps, {
+					timeout: opts.timeout,
+					settle,
+				});
+				await checkAuth();
+			}
+			if (scrollSteps.length > 0) {
+				await runScrollSteps(page, guard, scrollDescriptors, clickSteps.length, {
+					timeout: opts.timeout,
+					settle,
+				});
+				await checkAuth();
+			}
+			checkInteractionNav = guard.checkNavigation;
 		}
 
 		const body = await extract(page, opts);
@@ -837,11 +1009,11 @@ export async function render(url, options = {}) {
 			screenshot = opts.screenshot;
 		}
 
-		// Last word on the click guard: a navigation a click set off late —
-		// during the auth probe, extraction or the screenshot — was stopped by
-		// the route (the page above is still the original), but the run must
-		// still fail rather than report success.
-		checkClickNavigation?.();
+		// Last word on the interaction guard: a navigation a click or scroll
+		// set off late — during the auth probe, extraction or the screenshot
+		// — was stopped by the route (the page above is still the original),
+		// but the run must still fail rather than report success.
+		checkInteractionNav?.();
 
 		ok = true;
 		return {
@@ -850,6 +1022,9 @@ export async function render(url, options = {}) {
 			url: page.url(),
 			screenshot,
 			waitUntilFallback,
+			// Every scroll step that ran, counted once each — including a
+			// target already in view. 0 without scrolling.
+			scrollsPerformed: scrollSteps.length,
 		};
 	} finally {
 		// Land the cooldown writes before anything else can fail: a 429/503
