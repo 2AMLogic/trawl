@@ -203,6 +203,9 @@ function fakeBrowser({ failSelector = false, navigateOn = null } = {}) {
 }
 
 const SEAM = {
+	// render() resolves a browser path before it reads the fake browserType, so
+	// a host with no Chromium throws NoBrowserError. Any existing file passes.
+	executablePath: process.execPath,
 	format: "title",
 	waitUntil: "load",
 	authCheck: false,
