@@ -425,6 +425,19 @@ test("--help documents the pacing flags and the state dir", async () => {
 	assert.match(stdout, /TRAWL_STATE_DIR/);
 });
 
+test("treats --ignore-budget as a boolean flag", () => {
+	const args = parseArgs(["https://example.com", "--ignore-budget"]);
+	assert.equal(args["--ignore-budget"], true);
+	assert.deepEqual(args._, ["https://example.com"]);
+});
+
+test("--help documents the budget flag, the values, and exit code 5", async () => {
+	const { stdout } = await runCli(CLI_PATH, ["--help"]);
+	assert.match(stdout, /--ignore-budget/);
+	assert.match(stdout, /60 per rolling hour, 200 per rolling\s+day/);
+	assert.match(stdout, /5 origin used up its page budget/);
+});
+
 // `serve` logs when each path was requested and, given `stateDir`, the
 // recorded start of the request that hit it; `assertSpaced` checks consecutive
 // gated requests started >= minGapMs apart. Both are shared
@@ -474,7 +487,7 @@ test("two separate trawl processes are spaced by --min-interval (via the bin sym
 	assert.equal(readdirSync(join(TRAWL_STATE_DIR, "pacing")).length, 1);
 });
 
-test("--no-pacing opts out: no cross-run wait and no state written", async () => {
+test("--no-pacing opts out: no cross-run wait and no pacing state written", async () => {
 	const s = await serve({ "/robots.txt": "User-agent: *\nAllow: /\n" });
 	const { link, cleanup } = binLink();
 	const TRAWL_STATE_DIR = tempDir("trawl-state-");
@@ -492,7 +505,9 @@ test("--no-pacing opts out: no cross-run wait and no state written", async () =>
 	}
 	assert.equal(s.hits.length, 2);
 	assert.ok(s.hits[1].at - s.hits[0].at < 10000, "--no-pacing still waited");
-	assert.deepEqual(readdirSync(TRAWL_STATE_DIR), []);
+	// No pacing state, but the page budget is not disabled by --no-pacing:
+	// both admitted attempts were still counted (src/budget.mjs).
+	assert.deepEqual(readdirSync(TRAWL_STATE_DIR), ["budget"]);
 });
 
 test("two CLI renders space every robots.txt and page request", opts, async () => {

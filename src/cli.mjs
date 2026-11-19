@@ -33,6 +33,7 @@ import {
 import {
 	AuthWallError,
 	BlockedError,
+	BudgetError,
 	CooldownError,
 	FORMATS,
 	normalizeClickSteps,
@@ -126,7 +127,7 @@ Options:
       --min-interval <ms>  Minimum gap between requests to one origin,
                             across separate runs; Crawl-delay still wins if
                             larger. 0 drops the floor only. Max ${MAX_MIN_INTERVAL_MS}.
-                                                             (default: ${DEFAULT_MIN_INTERVAL_MS})
+                             (default: ${DEFAULT_MIN_INTERVAL_MS}, plus 0-500ms jitter)
       --no-pacing          Don't pace requests across runs (Crawl-delay is
                             still honored within a run). Pacing state lives
                             in $TRAWL_STATE_DIR, else
@@ -135,6 +136,12 @@ Options:
                             403/429/503 block (see exit code 4). Bypasses the
                             refusal only: pacing and any Crawl-delay still
                             apply, and a new block is still recorded.
+      --ignore-budget      Render even if the origin has used up its page
+                            budget — 60 per rolling hour, 200 per rolling
+                            day, shared by every trawl entry point through
+                            the same state directory (see exit code 5).
+                            Bypasses the refusal only: the attempt is still
+                            counted, and cooldowns and pacing still apply.
       --profile <dir>      Persistent browser profile dir (cookies/
                             localStorage survive across runs); also read from
                             $TRAWL_PROFILE_DIR. Populate one with "trawl login"
@@ -201,11 +208,21 @@ HTTP-date), else 60s doubling per consecutive failure up to 1h. Until then,
 every trawl call to that origin is refused before any request is made. A 2xx
 page, or 24h without a failure, resets the backoff.
 
+Page budgets: on top of pacing, every render counts one attempt per
+requested origin against a rolling hour (60) and a rolling day (200),
+shared by the CLI, the library and the MCP server through the same state
+directory ($TRAWL_STATE_DIR, else \${XDG_CACHE_HOME:-~/.cache}/trawl).
+Past either limit, calls are refused before any request is made —
+robots.txt included — until a slot rolls free (exit code 5).
+--ignore-budget renders anyway; the attempt is still counted.
+
 Exit codes: 0 success, 22 page returned 4xx/5xx (as curl --fail) or was
 blocked — a main-frame 403, or a served-with-200 challenge, is refused with
 nothing on stdout and any --output file untouched, 3 page appears to be
 behind a login wall (see --no-auth-check / trawl login), 4 origin is cooling
-down after a block (see --ignore-cooldown), 1 usage or runtime error.
+down after a block (see --ignore-cooldown), 5 origin used up its page budget
+(see --ignore-budget), 1 usage or runtime error (including an unwritable
+budget state).
 `;
 
 const FLAG_ALIASES = {
@@ -313,6 +330,7 @@ export function parseArgs(argv) {
 			arg === "--no-auth-check" ||
 			arg === "--no-pacing" ||
 			arg === "--ignore-cooldown" ||
+			arg === "--ignore-budget" ||
 			arg === "--include-auth"
 		) {
 			out[arg] = true;
@@ -463,6 +481,7 @@ export async function main(argv, deps = {}) {
 		authCheck: !args["--no-auth-check"],
 		pacing: !args["--no-pacing"],
 		ignoreCooldown: args["--ignore-cooldown"] === true,
+		ignoreBudget: args["--ignore-budget"] === true,
 		...(minIntervalMs !== undefined ? { minIntervalMs } : {}),
 		// pacingStateDir is left to render(), which reads $TRAWL_STATE_DIR.
 		// Only override when the flag was actually supplied, so render()'s own
@@ -1036,6 +1055,10 @@ if (isMainModule()) {
 		// react to differently: stop and ask a human to sign in, rather than
 		// retry or (worse) treat the login-wall body as real content.
 		// Likewise a cooldown refusal: wait until the stated time, don't retry.
+		// And a budget refusal: the window is spent — wait for it to roll
+		// over, or pass --ignore-budget. Budget state that cannot be recorded
+		// at all stays exit 1: that is a broken state directory, not a spent
+		// budget.
 		// A block (a 403 denial, or a served-with-200 challenge) keeps curl
 		// --fail's 22 for the HTTP-level failure, with nothing on stdout.
 		process.exitCode =
@@ -1045,6 +1068,8 @@ if (isMainModule()) {
 					? 3
 					: err instanceof CooldownError
 						? 4
-						: 1;
+						: err instanceof BudgetError
+							? 5
+							: 1;
 	}
 }

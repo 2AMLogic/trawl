@@ -6,6 +6,11 @@ import { chromium } from "playwright-core";
 import TurndownService from "turndown";
 import { resolveExecutablePath } from "./browser.mjs";
 import {
+	BudgetError,
+	BudgetUnavailableError,
+	createBudgetStore,
+} from "./budget.mjs";
+import {
 	CookieParseError,
 	addCookiesFailure,
 	browserWouldReject,
@@ -19,7 +24,6 @@ import {
 	createCooldownStore,
 } from "./cooldown.mjs";
 import {
-	DEFAULT_MIN_INTERVAL_MS,
 	createPacer,
 	defaultStateDir,
 	validateMinInterval,
@@ -35,8 +39,19 @@ import { stateOrigin } from "./state.mjs";
 // The public cookie surface, re-exported so a library caller can build the
 // list `{ cookies: [...] }` wants without a second entry point: the `exports`
 // map has one entry, and a `./cookies` subpath would expose every helper in
-// `cookies.mjs` rather than these four.
-export { CookieParseError, CooldownError, browserWouldReject, filterCookies, parseCookies };
+// `cookies.mjs` rather than these four. The budget errors ride along the
+// same way: a library caller needs to tell "the origin is over its page
+// budget" (BudgetError) apart from "the budget state is unusable"
+// (BudgetUnavailableError).
+export {
+	BudgetError,
+	BudgetUnavailableError,
+	CookieParseError,
+	CooldownError,
+	browserWouldReject,
+	filterCookies,
+	parseCookies,
+};
 
 const REDACTED = "[redacted]";
 const REDACT_HEADERS = new Set([
@@ -726,10 +741,11 @@ export async function render(url, options = {}) {
 
 	// Validated up front, before any network or browser work — even when
 	// pacing is off, a nonsensical value is a caller bug worth surfacing.
-	const minIntervalMs =
-		opts.minIntervalMs === undefined
-			? DEFAULT_MIN_INTERVAL_MS
-			: validateMinInterval(opts.minIntervalMs, "minIntervalMs");
+	// Passed to the pacer only when it was actually supplied, so an omitted
+	// value gets the pacer's default floor and its jitter.
+	if (opts.minIntervalMs !== undefined) {
+		validateMinInterval(opts.minIntervalMs, "minIntervalMs");
+	}
 
 	// Validated here for the same reason: a malformed click list is a caller
 	// bug, and must not cost a robots.txt request or a browser launch. The
@@ -745,8 +761,10 @@ export async function render(url, options = {}) {
 	const userAgent = opts.userAgent ?? (await defaultUserAgent());
 
 	// One state directory for everything trawl remembers between runs:
-	// `stateDir`, else the older pacing-only `pacingStateDir`, else
-	// $TRAWL_STATE_DIR / ${XDG_CACHE_HOME:-~/.cache}/trawl.
+	// `stateDir`, else the legacy `pacingStateDir` — a stand-in for the
+	// whole directory when `stateDir` is absent (the pacer alone honours it
+	// separately, below) — else $TRAWL_STATE_DIR /
+	// ${XDG_CACHE_HOME:-~/.cache}/trawl.
 	const stateDir =
 		opts.stateDir ?? opts.pacingStateDir ?? defaultStateDir();
 
@@ -767,6 +785,19 @@ export async function render(url, options = {}) {
 	};
 	admit();
 
+	// Rolling per-origin page budgets (src/budget.mjs): every render() call
+	// is one admitted attempt — the robots probe, the page navigation, its
+	// subresources and the networkidle-fallback retry all belong to it —
+	// counted per requested origin against a rolling hour and a rolling
+	// day, shared across CLI, library and MCP callers of the same state
+	// directory. Reserved here, after the cooldown check and before the
+	// first robots or page request, so a refused call makes zero requests.
+	// `ignoreBudget` skips the refusal only: the attempt is still recorded,
+	// and no pacing or cooldown override turns the budget off. Non-http(s)
+	// URLs never touch it.
+	const budget = origin ? createBudgetStore({ stateDir }) : null;
+	await budget?.reserve(origin, { enforce: !opts.ignoreBudget });
+
 	// Cross-run pacing (src/pacing.mjs): every explicit request this call
 	// makes to an http(s) origin — the robots.txt fetch, the page navigation,
 	// and the networkidle-fallback navigation — waits its turn behind the last
@@ -779,7 +810,12 @@ export async function render(url, options = {}) {
 			? createPacer({
 					origin,
 					stateDir: opts.pacingStateDir ?? stateDir,
-					minIntervalMs,
+					// Omitted → the pacer's own default floor plus its 0–500 ms
+					// jitter; an explicit value (validated above) is used
+					// exactly as given.
+					...(opts.minIntervalMs !== undefined && {
+						minIntervalMs: opts.minIntervalMs,
+					}),
 				})
 			: null;
 	// The Crawl-delay that applies to the page navigation, as learned from
