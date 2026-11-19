@@ -108,7 +108,8 @@ file's own refresh in progress.
 ## Not planned
 
 - Proxy rotation, fingerprint spoofing, CAPTCHA solving (README, Etiquette).
-- Detecting or auto-retrying past anti-bot interstitials; the documented
+- Auto-retrying or solving past anti-bot interstitials; trawl detects and
+  refuses a block page, and the documented
   `--wait-until domcontentloaded --settle` recipe is the answer.
 - Click, type, navigate, cookies or profiles on the MCP server: it stays
   read-only by design (`src/mcp.mjs` header, README "As an MCP server").

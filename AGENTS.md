@@ -6,10 +6,10 @@ browser. `robots.txt` is advisory by default (`--respect-robots`, library
 `respectRobots: true`, MCP `respect_robots` is the opt-in strict mode;
 `--ignore-robots` is a no-op), and no change may make a single paced read fail
 because of it. Abuse is limited by rate and volume: the per-origin pace,
-cooldowns on 429/503, and the absence of any crawl mode. A shared per-origin
-page budget and a block-page backoff are planned, not built — see
-[#141](https://github.com/2AMLogic/trawl/issues/141) and
-[#142](https://github.com/2AMLogic/trawl/issues/142). A proposal to add a new
+cooldowns on blocks (403/429/503 and challenge pages served with 200,
+[#142](https://github.com/2AMLogic/trawl/issues/142)), and the absence of any
+crawl mode. A shared per-origin page budget is planned, not built — see
+[#141](https://github.com/2AMLogic/trawl/issues/141). A proposal to add a new
 refusal on the fetch path needs an operator decision, recorded in an issue,
 before it is built. See
 [#140](https://github.com/2AMLogic/trawl/issues/140); the named test

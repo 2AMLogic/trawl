@@ -48,7 +48,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Nothing else about the entry point changes, and `src/cookies.mjs` itself
   stays an unreachable subpath.
 
+- **Anti-bot challenge pages are detected and refused.** A page whose trimmed
+  title is exactly "Just a moment..." *and* that carries at least one
+  Cloudflare challenge marker is now refused with `BlockedError` and exit
+  22, instead of being rendered as if it were the content. Both halves are
+  required, so an article that merely quotes the title or names the markup in
+  prose still renders normally. The probe runs after the auth-wall check
+  (a sign-in wall keeps exit 3) and after `--wait-for`/`--settle`, so the
+  documented `--wait-until domcontentloaded --settle 15000` recipe still
+  works for a challenge that resolves on its own. The detector fails open: a
+  miss renders the page exactly as before. The markup signals come from a
+  hand-written fixture rather than a captured live challenge; verifying
+  them is tracked in #149.
+
+- **`BlockedError` and `detectChallenge` are exported** from the package
+  entry point, alongside the existing `CooldownError` and `AuthWallError`
+  style errors, so library callers can catch a refused block page and reuse
+  the predicate.
+
 ### Changed
+
+- **A main-frame `403` is now refused rather than written.** Previously the
+  body of the `403` response reached stdout (or `-o`) and the process exited
+  22; now nothing is written to stdout and an existing `-o` file is left
+  byte-identical, with the same exit code 22. Anyone piping `trawl` output
+  and tolerating exit 22 will see different bytes. `404`, `410` and other
+  `5xx` responses deliberately keep writing the body, so the output contract
+  is now asymmetric across 4xx statuses.
+
+  **`403` now starts a per-origin cooldown.** The next call to an origin that
+  returned `403` exits 4 without making any request, joining the same
+  failure streak as `429` and `503`. `--ignore-cooldown` overrides it, as
+  does any 2xx response resetting the streak. A page served with `200` that
+  matches the challenge predicate above is recorded as a `403`-equivalent for
+  the same purpose.
 
 - **`robots.txt` rule paths now honour `*` and `$`** (RFC 9309 §2.2.3).
   A `*` in an `Allow`/`Disallow` path matches any run of characters,
