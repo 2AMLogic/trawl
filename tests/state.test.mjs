@@ -22,9 +22,12 @@ import path from "node:path";
 import { after, test } from "node:test";
 import {
 	LockTimeoutError,
+	acquireStateLock,
 	createFileLock,
 	originDigest,
+	stateFilesFor,
 	stateOrigin,
+	unavailableReason,
 	writeJsonAtomic,
 } from "../src/state.mjs";
 
@@ -402,6 +405,67 @@ test("originDigest is stable, 32 hex chars, and shared by equivalent origins", (
 	assert.match(a, /^[0-9a-f]{32}$/);
 	assert.notEqual(a, originDigest(stateOrigin("http://a.com")));
 	assert.notEqual(a, originDigest(stateOrigin("https://a.com:8443")));
+});
+
+// --- per-origin store glue ------------------------------------------------
+
+test("stateFilesFor names the state and lock files by the origin digest", () => {
+	const dir = path.join("s", "budget");
+	const digest = originDigest("https://a.test");
+	const files = stateFilesFor(dir, "https://a.test");
+	assert.equal(files.statePath, path.join(dir, `${digest}.json`));
+	assert.equal(files.lockPath, path.join(dir, `${digest}.lock`));
+	assert.equal(
+		stateFilesFor(dir, "https://a.test").statePath,
+		files.statePath,
+	);
+});
+
+test("acquireStateLock forwards given injectables and drops undefined ones", async () => {
+	const dir = freshDir();
+	const c = clock();
+	const lockPath = path.join(dir, "o.lock");
+	const release = await acquireStateLock({
+		lockPath,
+		timeoutMs: 0,
+		staleMs: STALE_MS,
+		now: c.now,
+		pid: 4242,
+		host: HOST,
+	});
+	const o = readOwner(lockPath);
+	assert.equal(o.pid, 4242);
+	assert.equal(o.host, HOST);
+	assert.equal(o.createdAt, c.t);
+	release();
+	assert.equal(existsSync(lockPath), false);
+});
+
+test("acquireStateLock works with only the required fields", async () => {
+	const dir = freshDir();
+	const lockPath = path.join(dir, "o.lock");
+	const release = await acquireStateLock({
+		lockPath,
+		timeoutMs: 0,
+		staleMs: STALE_MS,
+		now: () => 1_000_000,
+	});
+	assert.ok(existsSync(lockPath));
+	release();
+	assert.equal(existsSync(lockPath), false);
+});
+
+test("unavailableReason names a busy lock, else the code, message, or value", () => {
+	assert.equal(
+		unavailableReason(new LockTimeoutError("x.lock", 5000), 5000),
+		"its lock stayed busy for 5000ms",
+	);
+	assert.equal(
+		unavailableReason(Object.assign(new Error("nope"), { code: "EACCES" }), 1),
+		"EACCES",
+	);
+	assert.equal(unavailableReason(new Error("nope"), 1), "nope");
+	assert.equal(unavailableReason("boom", 1), "boom");
 });
 
 // --- hygiene -------------------------------------------------------------
