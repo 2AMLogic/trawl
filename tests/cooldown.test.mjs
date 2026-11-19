@@ -574,7 +574,7 @@ test("a cooling-down origin is refused before robots.txt or browser resolution",
 	const stateDir = freshDir();
 	const origin = "http://127.0.0.1:9";
 	await seed(stateDir, origin);
-	for (const extra of [{}, { ignoreRobots: true }, { pacing: false }]) {
+	for (const extra of [{}, { ignoreRobots: true }, { respectRobots: true }, { pacing: false }]) {
 		let fetched = 0;
 		await assert.rejects(
 			() =>
@@ -626,12 +626,12 @@ test("a non-http(s) URL never touches the cooldown state", async () => {
 	assert.deepEqual(readdirSync(stateDir), []);
 });
 
-test("a 503 robots.txt is a robots refusal, never a cooldown", async () => {
+test("a 503 robots.txt is a strict-mode robots refusal, never a cooldown", async () => {
 	const stateDir = freshDir();
 	const s = await serve({ "/robots.txt": respond(503, { "retry-after": "600" }, "busy") });
 	try {
 		await assert.rejects(
-			() => render(`${s.origin}/page`, { ...NO_BROWSER, stateDir }),
+			() => render(`${s.origin}/page`, { ...NO_BROWSER, stateDir, respectRobots: true }),
 			/robots\.txt is unreachable/,
 		);
 	} finally {
@@ -640,7 +640,10 @@ test("a 503 robots.txt is a robots refusal, never a cooldown", async () => {
 	assert.equal(existsSync(path.join(stateDir, "cooldown")), false);
 });
 
-test("a cooldown recorded during the pacing wait refuses the paced request", async () => {
+// The cooldown gate sits outside the robots verdict branch, so it propagates in
+// advisory and strict mode alike.
+for (const mode of [{}, { respectRobots: true }]) {
+test(`a cooldown recorded during the pacing wait refuses the paced request (${JSON.stringify(mode)})`, async () => {
 	const stateDir = freshDir();
 	const origin = "http://127.0.0.1:9";
 	// Prime pacing so the next request to this origin waits ~1.5s.
@@ -650,6 +653,7 @@ test("a cooldown recorded during the pacing wait refuses the paced request", asy
 	let fetched = 0;
 	const rendering = render(`${origin}/page`, {
 		...NO_BROWSER,
+		...mode,
 		stateDir,
 		minIntervalMs: 1500,
 		fetch: async () => {
@@ -664,6 +668,7 @@ test("a cooldown recorded during the pacing wait refuses the paced request", asy
 	// The refused request was not recorded as a pacing attempt.
 	assert.equal(readFileSync(path.join(stateDir, "pacing", pacingFile), "utf8"), pacedBefore);
 });
+}
 
 test("MCP reports a cooldown refusal as a tool error", async () => {
 	const origin = "http://127.0.0.1:9";
@@ -878,6 +883,75 @@ test("a challenge page served with 200 is a block and records a cooldown", brows
 		const hits = s.hits.length;
 		await assert.rejects(() => run(), (err) => err instanceof CooldownError && err.origin === s.origin);
 		assert.equal(s.hits.length, hits, "a refused run still made requests");
+	} finally {
+		await s.close();
+	}
+});
+
+// A real Cloudflare managed challenge, captured live (provenance, headers and
+// selector observations: tests/fixtures/cloudflare-managed-challenge.md). Unlike
+// CHALLENGE_PAGE above, none of this markup is hand-authored. Measured: the
+// live response was HTTP 403, and the raw HTML has no element matching any of
+// the five challenge selectors — the `/cdn-cgi/challenge-platform` script is
+// created by the page's inline JS, so the marker only exists post-JS.
+const CAPTURE_URL = new URL("./fixtures/cloudflare-managed-challenge.html", import.meta.url);
+const serveCapture = (status) =>
+	serve({
+		"/robots.txt": ROBOTS,
+		"/page": (_req, res) => {
+			res.writeHead(status, { "content-type": "text/html; charset=UTF-8" });
+			res.end(readFileSync(CAPTURE_URL));
+		},
+	});
+
+test("the captured challenge: title is exact and no selector matches before scripts run", () => {
+	const raw = readFileSync(CAPTURE_URL, "utf8");
+	assert.equal(raw.match(/<title>([^<]*)<\/title>/)[1], "Just a moment...");
+	assert.doesNotMatch(raw, /id="(challenge-form|challenge-stage|challenge-running|cf-chl)/);
+	assert.doesNotMatch(raw, /<script[^>]*\ssrc=/);
+	// Present only as text inside the inline script that injects it at run time.
+	assert.match(raw, /a\.src = '\/cdn-cgi\/challenge-platform\//);
+});
+
+test("the captured challenge, as served live (HTTP 403), is a block and records a cooldown", browser, async () => {
+	const stateDir = freshDir();
+	const s = await serveCapture(403);
+	try {
+		await assert.rejects(() => render(`${s.origin}/page`, { stateDir, minIntervalMs: 0 }), (err) => {
+			assert.ok(err instanceof BlockedError, err.stack);
+			assert.equal(err.status, 403);
+			assert.deepEqual(err.reasons, ["main-frame HTTP 403"]);
+			return true;
+		});
+		const rec = parseRecord(
+			readFileSync(createCooldownStore({ stateDir }).statePathFor(s.origin), "utf8"),
+		);
+		assert.equal(rec.failures, 1);
+		assert.equal(rec.status, 403);
+	} finally {
+		await s.close();
+	}
+});
+
+// The live status was 403, so this is a synthetic status: it replays the real
+// body with a 200 to prove the production probe matches Cloudflare's own markup
+// once its inline script has run, which is the case detectChallenge exists for.
+test("the captured challenge body replayed with HTTP 200 matches the production predicate", browser, async () => {
+	const stateDir = freshDir();
+	const s = await serveCapture(200);
+	try {
+		await assert.rejects(() => render(`${s.origin}/page`, { stateDir, minIntervalMs: 0 }), (err) => {
+			assert.ok(err instanceof BlockedError, err.stack);
+			assert.equal(err.status, 200);
+			assert.ok(err.reasons.some((r) => r.includes('title is "Just a moment..."')), err.reasons);
+			assert.ok(err.reasons.some((r) => /^1 challenge element matches/.test(r)), err.reasons);
+			return true;
+		});
+		const rec = parseRecord(
+			readFileSync(createCooldownStore({ stateDir }).statePathFor(s.origin), "utf8"),
+		);
+		assert.equal(rec.failures, 1);
+		assert.equal(rec.status, 403);
 	} finally {
 		await s.close();
 	}

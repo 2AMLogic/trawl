@@ -90,6 +90,13 @@ const LOAD_CONTROL_PROPERTIES = {
 			"Defaults to 0. Use with wait_until=domcontentloaded to give a " +
 			"client-rendered page time to paint.",
 	},
+	respect_robots: {
+		type: "boolean",
+		description:
+			"Strict mode: refuse the read if robots.txt disallows the path or " +
+			"cannot be fetched. Defaults to false, where robots.txt is advisory " +
+			"(its Crawl-delay still applies).",
+	},
 	timeout_ms: {
 		type: "number",
 		minimum: 1,
@@ -232,6 +239,15 @@ function optionalMs(args, key, { min, max = MAX_WAIT_MS }) {
 	return value;
 }
 
+// Absent or null means "not supplied"; anything else must be a real boolean,
+// so the string "false" cannot silently turn strict mode on.
+function optionalBoolean(args, key) {
+	const value = args?.[key];
+	if (value === undefined || value === null) return undefined;
+	if (typeof value !== "boolean") throw new Error(`"${key}" must be a boolean`);
+	return value;
+}
+
 // Returns ONLY the keys the caller actually supplied. This is load-bearing:
 // `render()` merges `{ ...DEFAULTS, ...options }`, and an object spread does
 // not skip `undefined` values — so always setting these three would overwrite
@@ -246,7 +262,9 @@ function loadControlsFor(args) {
 	// floors at 1 because Playwright reads 0 as "no timeout".
 	const settle = optionalMs(args, "settle_ms", { min: 0 });
 	const timeout = optionalMs(args, "timeout_ms", { min: 1 });
+	const respectRobots = optionalBoolean(args, "respect_robots");
 	return {
+		...(respectRobots !== undefined && { respectRobots }),
 		...(waitUntil !== undefined && { waitUntil }),
 		...(settle !== undefined && { settle }),
 		...(timeout !== undefined && { timeout }),

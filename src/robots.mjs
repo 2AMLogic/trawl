@@ -424,7 +424,9 @@ function redirectedElsewhere(response, robotsUrl) {
 // cookies did not follow the redirect, but only when robots.txt could not be
 // retrieved: a matched rule is a plain disallow and never carries it. Nothing here ever names a cookie.
 export function robotsDenialMessage(verdict, { sentCookies = false, profile = false } = {}) {
-	const override = "Use --ignore-robots to override.";
+	// Only strict mode (--respect-robots / respectRobots) ever refuses; the
+	// default read proceeds. Say which switch produced this refusal.
+	const override = "Refused because strict robots mode is on (--respect-robots, respectRobots, respect_robots); leave it off to read the page anyway.";
 	const redirectHint = verdict?.failure && verdict?.crossOriginRedirect
 		? "The robots.txt request was redirected to another origin, and cookies " +
 			"are not sent across a cross-origin redirect, so a cookie-gated " +
