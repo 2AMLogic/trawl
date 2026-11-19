@@ -49,10 +49,14 @@ browser. `robots.txt` is advisory by default (`--respect-robots`, library
 because of it. Abuse is limited by rate and volume: the per-origin pace,
 cooldowns on blocks (403/429/503 and challenge pages served with 200,
 [#142](https://github.com/2AMLogic/trawl/issues/142)), and the absence of any
-crawl mode. A shared per-origin page budget is planned, not built — see
-[#141](https://github.com/2AMLogic/trawl/issues/141). A proposal to add a new
-refusal on the fetch path needs an operator decision, recorded in an issue,
-before it is built. See
+crawl mode. A shared per-origin page budget is built: 60 renders per origin
+per rolling hour, 200 per rolling day, shared by the CLI, library and MCP
+entry points through the same state directory. Past either limit a call is
+refused before any request is made, with exit code 5, until a slot rolls
+free; `--ignore-budget` (library `ignoreBudget: true`) skips the refusal
+only. See [#141](https://github.com/2AMLogic/trawl/issues/141), which built
+it. A proposal to add a new refusal on the fetch path needs an operator
+decision, recorded in an issue, before it ships. See
 [#140](https://github.com/2AMLogic/trawl/issues/140); the named test
 "default flags fetch a page on a Disallow: / origin" in `tests/render.test.mjs`
 fails if the refusal comes back.
