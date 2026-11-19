@@ -6,6 +6,11 @@ import { chromium } from "playwright-core";
 import TurndownService from "turndown";
 import { resolveExecutablePath } from "./browser.mjs";
 import {
+	BudgetError,
+	BudgetUnavailableError,
+	createBudgetStore,
+} from "./budget.mjs";
+import {
 	CookieParseError,
 	addCookiesFailure,
 	browserWouldReject,
@@ -13,11 +18,6 @@ import {
 	filterCookies,
 	parseCookies,
 } from "./cookies.mjs";
-import {
-	BudgetError,
-	BudgetUnavailableError,
-	createBudgetStore,
-} from "./budget.mjs";
 import {
 	COOLDOWN_STATUSES,
 	CooldownError,
@@ -649,8 +649,8 @@ export async function render(url, options = {}) {
 					// jitter; an explicit value (validated above) is used
 					// exactly as given.
 					...(opts.minIntervalMs !== undefined && {
-					minIntervalMs: opts.minIntervalMs,
-				}),
+						minIntervalMs: opts.minIntervalMs,
+					}),
 				})
 			: null;
 	// The Crawl-delay that applies to the page navigation, as learned from

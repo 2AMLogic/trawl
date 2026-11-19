@@ -282,7 +282,9 @@ refused with nothing on stdout and any `--output` file untouched — `3`
 page appears to be behind a login wall (see "Auth walls" below), `4` the
 origin is cooling down after a block (403/429/503 or a challenge) and nothing
 was requested (see [Etiquette](#etiquette); `--ignore-cooldown` overrides),
-`1` usage or runtime error.
+`5` the origin has exhausted its hourly or daily page budget (see
+`--ignore-budget`), `1` usage or runtime error (including an unwritable
+budget state).
 
 ### Auth walls & signed-in sessions
 

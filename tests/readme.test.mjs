@@ -1,6 +1,5 @@
-// Guards the two hand-maintained copies CLAUDE.md names: the README's usage
-// block (a copy of `--help`) and its MCP tool table (a copy of TOOLS in
-// src/mcp.mjs). Compares flags and argument names, not prose. No browser needed.
+// Compare the README's flags and exit codes with `--help`, and its MCP tool
+// table with TOOLS in src/mcp.mjs. No browser needed.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -10,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { TOOLS } from "../src/mcp.mjs";
 import { FORMATS } from "../src/render.mjs";
+import { runViaBin } from "./helpers.mjs";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const readme = readFileSync(path.join(root, "README.md"), "utf8");
@@ -55,6 +55,22 @@ test("README usage block lists the same flags as --help", () => {
 		`README usage block is out of sync with --help: missing from README: [${missing.join(", ")}]; ` +
 			`in README but not in --help: [${extra.join(", ")}]`,
 	);
+});
+
+test("README exit-code list matches --help", async () => {
+	const help = await runViaBin(["--help"]);
+	assert.equal(help.code, 0, help.stderr);
+	const exitParagraph = (text) => text.split("\n\n").find((p) => p.startsWith("Exit codes:"));
+	const inHelp = exitParagraph(help.stdout);
+	const inReadme = exitParagraph(readme);
+	assert.ok(inHelp, "--help is missing its exit-code list");
+	assert.ok(inReadme, "README is missing its exit-code list");
+
+	// The help lists comma-separated entries. The README marks each code with backticks.
+	const expected = [...inHelp.matchAll(/(?:^Exit codes:|,)\s+(\d+)\s/g)].map((m) => m[1]);
+	const documented = [...inReadme.matchAll(/`(\d+)`/g)].map((m) => m[1]);
+	assert.ok(expected.length, "--help lists no exit codes");
+	assert.deepEqual(new Set(documented), new Set(expected));
 });
 
 test("README MCP tool table matches TOOLS", () => {
