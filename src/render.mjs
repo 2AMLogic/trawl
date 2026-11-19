@@ -598,7 +598,7 @@ export async function defaultUserAgent() {
 		// Packaged oddly or read-restricted — the link matters more than the
 		// exact version.
 	}
-	cachedUserAgent = `trawl/${version} (+https://github.com/rjwalters/trawl)`;
+	cachedUserAgent = `trawl/${version} (+https://github.com/2AMLogic/trawl)`;
 	return cachedUserAgent;
 }
 

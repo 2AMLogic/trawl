@@ -449,8 +449,8 @@ instead of an empty `<div id="root">`.
   The installed command is `trawl` either way — the scope affects the package
   name, not the binary.
 
-[0.5.0]: https://github.com/rjwalters/trawl/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/rjwalters/trawl/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/rjwalters/trawl/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/rjwalters/trawl/releases/tag/v0.2.0
-[0.1.0]: https://github.com/rjwalters/trawl/releases/tag/v0.1.0
+[0.5.0]: https://github.com/2AMLogic/trawl/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/2AMLogic/trawl/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/2AMLogic/trawl/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/2AMLogic/trawl/releases/tag/v0.2.0
+[0.1.0]: https://github.com/2AMLogic/trawl/releases/tag/v0.1.0
