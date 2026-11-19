@@ -1,0 +1,32 @@
+name: Release
+
+# npm trusted publishing (operator ruling on #166): publishing a GitHub
+# Release checks out the released tag and publishes it to npm with an OIDC
+# token — no stored credential, signed provenance, no interactive 2FA.
+# Requires the one-time trusted-publisher registration on npmjs.com
+# (repository 2AMLogic/trawl, workflow filename release.yml); until that is
+# done the publish step fails and the fallback is the manual `npm publish`
+# documented in .repo/release-policy.md (seam: post-summary).
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write # OIDC token for npm trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      # github.ref is the released tag (vX.Y.Z) on a release event: publish
+      # the released tree, not whatever main has moved to since.
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          # npm >= 11 (bundled with Node 24) speaks trusted publishing
+          # natively — no NODE_AUTH_TOKEN is set by design.
+          node-version: "24.22.1"
+          registry-url: https://registry.npmjs.org
+      - run: npm install --no-audit --no-fund
+      - run: npm publish --provenance --access public
