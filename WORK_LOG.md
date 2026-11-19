@@ -3,6 +3,20 @@
 Chronological record of merged PRs and closed issues, newest first.
 Maintained by the Loom Guide role; entries are appended automatically.
 
+### 2026-11-19
+
+- **PR #151**: test: replay a live Cloudflare managed-challenge capture through render()
+- **PR #150**: feat: add scroll steps so lazy-loaded listings can be read past the first screen
+- **PR #148**: feat: enforce a shared per-origin page budget and slower default pacing
+- **PR #147**: feat: refuse top-level block pages and record a per-origin cooldown
+- **PR #146**: feat: make robots.txt advisory for single-page reads, add --respect-robots
+- **Issue #149** (closed): Verify detectChallenge against a real Cloudflare managed challenge (capture a live fixture)
+- **Issue #145** (closed): Add a scroll step so lazy-loaded listings can be read past the first screen
+- **Issue #143** (closed): Make robots rules advisory for single-page reads and expose strict opt-in
+- **Issue #142** (closed): Stop output and persist a cooldown on top-level block pages
+- **Issue #141** (closed): Enforce a shared per-origin page budget and slower default pacing
+- **Issue #140** (closed): Make robots.txt advisory by default; limit abuse by rate and volume instead
+
 ### 2026-11-18
 
 - **PR #137**: ci: run CI on merge-group trees with isolated concurrency
