@@ -229,8 +229,8 @@ matches within `--timeout` fails the run naming the step and selector
 longer listing raises it explicitly (`--max-scrolls 10`). A list longer than
 the cap, or a bad cap, is a usage error before any request is made. The run
 reports what it did as `performed 2 scrolls` on stderr (stdout stays exactly
-the extracted content), and library/MCP callers get the count as
-`scrollsPerformed`.
+the extracted content); library callers get the count as `scrollsPerformed`,
+and MCP clients as `_meta.scrollsPerformed` on the tool result.
 
 ### Markdown
 
@@ -704,7 +704,7 @@ take `0` as Playwright's "no timeout", which would hang a tool call with no way
 to cancel it. Both tools also take the CLI's scrolling: `scroll` is an ordered
 list of `"bottom"` / CSS-selector steps and `max_scrolls` caps it at 3 by
 default — scrolling stays inside the one page load, and the result carries
-`scrollsPerformed` alongside the text. Results longer than 100,000 characters are
+`_meta.scrollsPerformed` alongside the text. Results longer than 100,000 characters are
 truncated with a notice saying so; set `TRAWL_MCP_MAX_CHARS` to change the
 budget. A failed fetch comes back as a tool error — the server keeps serving.
 Tool calls are paced per origin with the default 3000 ms floor and count

@@ -412,8 +412,10 @@ const SCROLL_FLUSH = () =>
 // step that cannot run (a selector that never matched within `timeout`)
 // fails the run naming the step and selector; one that would load a
 // different top-level document is stopped before the request leaves and
-// fails the run, exactly as a click would.
-async function runScrollSteps(page, guard, steps, stepOffset, { timeout, settle }) {
+// fails the run, exactly as a click would. Exported for the unit test of
+// the message-less-failure wording below — that shape is not reachable
+// through a real Playwright call.
+export async function runScrollSteps(page, guard, steps, stepOffset, { timeout, settle }) {
 	const ms = timeout > 0 ? `${timeout}ms` : "the timeout";
 	for (let i = 0; i < steps.length; i++) {
 		const { target, index, count } = steps[i];
@@ -438,17 +440,20 @@ async function runScrollSteps(page, guard, steps, stepOffset, { timeout, settle 
 		} catch (err) {
 			if (!isTimeout(err)) {
 				// A selector Playwright cannot parse, or a page that went
-				// away: still names the step and target, cause preserved.
-				throw new ScrollError(`${label}: ${err.message.split("\n")[0]}`, {
-					step: index,
-					selector: target,
-					cause: err,
-				});
+				// away: still names the step and target, cause preserved. A
+				// rejection without a `message` stringifies to the value
+				// itself, so the error names the step instead of crashing
+				// before the ScrollError is built.
+				throw new ScrollError(
+					`${label}: ${String(err?.message ?? err).split("\n")[0]}`,
+					{ step: index, selector: target, cause: err },
+				);
 			}
+			// Only a selector step can get here: the bottom target goes
+			// through page.evaluate, which takes no timeout, so there is no
+			// bottom-specific wording.
 			throw new ScrollError(
-				target === "bottom"
-					? `${label}: the page did not scroll within ${ms}`
-					: `${label}: no element matched, or it could not be scrolled into view, within ${ms}`,
+				`${label}: no element matched, or it could not be scrolled into view, within ${ms}`,
 				{ step: index, selector: target, cause: err },
 			);
 		}
@@ -1194,7 +1199,9 @@ export async function render(url, options = {}) {
 			screenshot,
 			waitUntilFallback,
 			// Every scroll step that ran, counted once each — including a
-			// target already in view. 0 without scrolling.
+			// target already in view. 0 without scrolling. runScrollSteps
+			// throws on any failed step, so reaching this return implies all
+			// of them ran: the requested count is the performed count.
 			scrollsPerformed: scrollSteps.length,
 		};
 	} finally {

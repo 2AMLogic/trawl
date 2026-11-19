@@ -360,8 +360,11 @@ export async function callTool(name, args = {}, deps = {}) {
 		return {
 			content: [{ type: "text", text: truncate(result.body ?? "", limit) }],
 			// How many scroll steps ran, alongside the text — the text itself
-			// stays exactly the extracted content.
-			scrollsPerformed: result.scrollsPerformed,
+			// stays exactly the extracted content. It lives in `_meta`, the
+			// spec's designated extension point: a bare top-level key is no
+			// part of CallToolResult, and a client validating the result
+			// strictly rejects the whole call over it (unrecognized_keys).
+			_meta: { scrollsPerformed: result.scrollsPerformed },
 		};
 	} catch (err) {
 		return {
