@@ -3,6 +3,11 @@
 Chronological record of merged PRs and closed issues, newest first.
 Maintained by the Loom Guide role; entries are appended automatically.
 
+### 2026-11-23
+
+- **PR #176**: chore(deps): Bump turndown from 7.2.4 to 7.2.5 in the minor-and-patch group
+- **PR #177**: chore(deps): Bump playwright-core from 1.64.1 to 1.65.0
+
 ### 2026-11-19
 
 - **PR #173**: fix: exempt loopback origins from the page budget and default pacing floor
