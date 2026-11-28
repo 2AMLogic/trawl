@@ -3,6 +3,10 @@
 Chronological record of merged PRs and closed issues, newest first.
 Maintained by the Loom Guide role; entries are appended automatically.
 
+### 2026-11-28
+
+- **Issue #180** (closed): Loom resync manifest prune never covers .claude/commands/loom/ — orphan installed_files rows persist across every pass
+
 ### 2026-11-23
 
 - **PR #176**: chore(deps): Bump turndown from 7.2.4 to 7.2.5 in the minor-and-patch group
